@@ -66,7 +66,7 @@ def calc_distances_parallel(df, compare_fn, label_colname, item_colname, uid_col
         r = list(p.starmap(calc_distances_foritem, args))
         return pd.concat([pd.DataFrame(d) for d in r]).to_dict(orient="list")
 
-def calc_distances(df, compare_fn, label_colname, item_colname, uid_colname="uid"):
+def calc_distances(df, compare_fn, label_colname="label", item_colname="item", uid_colname="uid"):
     items = []
     u1s = []
     u2s = []
@@ -95,6 +95,13 @@ def calc_distances(df, compare_fn, label_colname, item_colname, uid_colname="uid
     stan_data["n_gold_users"] = 0
     stan_data["gold_user_err"] = 0
     return stan_data
+
+def proper_score(model_scores, gold_scores, score_fn=np.square):
+    map_ps = model_scores / np.sum(model_scores)
+    max_i = np.argmax(gold_scores)
+    map_r = 1 - map_ps
+    map_r[max_i] = map_ps[max_i]
+    return np.mean(score_fn(map_r))
 
 def visualize_embeddings(stan_data, opt, sim_df=None, preds={}):
     from sklearn.decomposition import PCA
