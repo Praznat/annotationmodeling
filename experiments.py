@@ -222,6 +222,7 @@ class Experiment():
         self.opt = None
         self.simulator = None
         self.annodf = None
+        self.golddict = {}
         self.badness_threshold = 0
         self.extra_baseline_labels = {}
 
@@ -495,6 +496,11 @@ class Experiment():
             self.sad_preds = self.get_merged_preds(self.sad_preds)
             self.heu_preds = self.get_merged_preds(self.heu_preds)
             self.mas_preds = self.get_merged_preds(self.mas_preds)
+            new_extra_baseline_labels = {}
+            for k, v in self.extra_baseline_labels.items():
+                self.backup_preds[k] = v
+                new_extra_baseline_labels[k] = self.get_merged_preds(v)
+            self.extra_baseline_labels = new_extra_baseline_labels
             self.golddict = orig_golddict
         self.test(num_samples=num_samples, debug=debug, **kwargs)
     
@@ -609,12 +615,12 @@ class RealExperiment(Experiment):
             self.merge_index_colname = merge_index
             self.annodf[merge_index] = annodf[merge_index]
         self.annodf = self.annodf.dropna().copy()
-        uiddict = utils.make_categorical(self.annodf, self.uid_colname)
-        itemdict = utils.make_categorical(self.annodf, self.item_colname)
+        self.uiddict = utils.make_categorical(self.annodf, self.uid_colname)
+        self.itemdict = utils.make_categorical(self.annodf, self.item_colname)
         if golddf is not None:
             golddf = golddf[[c_gold_item or self.item_colname, c_gold_label or self.label_colname]]
             golddf = golddf.rename(columns=colrename)[[self.item_colname, self.label_colname]]
-            golddf = utils.translate_categorical(golddf, self.item_colname, itemdict)
+            golddf = utils.translate_categorical(golddf, self.item_colname, self.itemdict)
             self.golddict = golddf.set_index(self.item_colname).to_dict()[self.label_colname]
         self.produce_stan_data()
 

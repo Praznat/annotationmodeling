@@ -36,35 +36,35 @@ def translate_categorical(df, colname, coldict, drop_missing=True):
     result[colname] = result[colname].astype(int)
     return result
 
-def calc_distances_foritem(idf, compare_fn, label_colname, item_colname, uid_colname):
-    users = idf[uid_colname].unique()
-    items = []
-    u1s = []
-    u2s = []
-    distances = []
-    for u1, u2 in combinations(users, 2):
-        p1 = idf[idf[uid_colname]==u1][label_colname].values[0]
-        p2 = idf[idf[uid_colname]==u2][label_colname].values[0]
-        distance = compare_fn(p1, p2)
-        items.append(idf[item_colname].values[0])
-        u1s.append(u1)
-        u2s.append(u2)
-        distances.append(distance)
-    distances /= 2
-    distances = np.array(distances) + (.1 - np.min(distances))
-    return {
-        "items":np.array(items) + 1,
-        "u1s":np.array(u1s) + 1,
-        "u2s":np.array(u2s) + 1,
-        "distances":distances
-    }
+# def calc_distances_foritem(idf, compare_fn, label_colname, item_colname, uid_colname):
+#     users = idf[uid_colname].unique()
+#     items = []
+#     u1s = []
+#     u2s = []
+#     distances = []
+#     for u1, u2 in combinations(users, 2):
+#         p1 = idf[idf[uid_colname]==u1][label_colname].values[0]
+#         p2 = idf[idf[uid_colname]==u2][label_colname].values[0]
+#         distance = compare_fn(p1, p2)
+#         items.append(idf[item_colname].values[0])
+#         u1s.append(u1)
+#         u2s.append(u2)
+#         distances.append(distance)
+#     distances /= 2
+#     distances = np.array(distances) + (.1 - np.min(distances))
+#     return {
+#         "items":np.array(items) + 1,
+#         "u1s":np.array(u1s) + 1,
+#         "u2s":np.array(u2s) + 1,
+#         "distances":distances
+#     }
     
-def calc_distances_parallel(df, compare_fn, label_colname, item_colname, uid_colname="uid"):
-    items = df[item_colname].unique()
-    args = tuple([(df[df[item_colname]==i], compare_fn, label_colname, item_colname, uid_colname) for i in items])
-    with Pool() as p:
-        r = list(p.starmap(calc_distances_foritem, args))
-        return pd.concat([pd.DataFrame(d) for d in r]).to_dict(orient="list")
+# def calc_distances_parallel(df, compare_fn, label_colname, item_colname, uid_colname="uid"):
+#     items = df[item_colname].unique()
+#     args = tuple([(df[df[item_colname]==i], compare_fn, label_colname, item_colname, uid_colname) for i in items])
+#     with Pool() as p:
+#         r = list(p.starmap(calc_distances_foritem, args))
+#         return pd.concat([pd.DataFrame(d) for d in r]).to_dict(orient="list")
 
 def calc_distances(df, compare_fn, label_colname="label", item_colname="item", uid_colname="uid"):
     items = []
@@ -78,11 +78,16 @@ def calc_distances(df, compare_fn, label_colname="label", item_colname="item", u
             p1 = idf[idf[uid_colname]==u1][label_colname].values[0]
             p2 = idf[idf[uid_colname]==u2][label_colname].values[0]
             distance = compare_fn(p1, p2)
+            if np.isnan(distance):
+                print(f"WARNING: NAN DISTANCE BETWEEN {p1} and {p2}")
             items.append(item)
             u1s.append(u1)
             u2s.append(u2)
             distances.append(distance)
     distances = np.array(distances) + (.1 - np.min(distances))
+    numnans = np.sum(np.isnan(distances))
+    if numnans > 0:
+        print(f"WARNING! FOUND {numnans} NAN DISTANCES!!")
     stan_data = {
         "items":np.array(items) + 1,
         "u1s":np.array(u1s) + 1,
