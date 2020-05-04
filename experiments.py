@@ -233,7 +233,7 @@ class Experiment():
         ''' trains and predicts using MAS, BAU, and SAD methods '''
         if self.stan_data is None:
             raise ValueError("Must setup stan_data first")
-        stan_model = utils.stanmodel("mas1", overwrite=False)
+        stan_model = utils.stanmodel("mas", overwrite=False)
         self.stan_data["use_uerr"] = use_uerr
         self.stan_data["use_diff"] = use_diff
         self.stan_data["use_norm"] = 1
@@ -621,7 +621,7 @@ class RealExperiment(Experiment):
 class CategoricalExperiment(RealExperiment):
     ''' TODO experiment using real simple data '''
     def __init__(self):
-        super().__init__(distance_fn=lambda x, y: (1 if x == y else 0))
+        super().__init__(eval_fn=lambda x, y: (1 if x == y else 0))
 
 
 # semi-supervised learning
