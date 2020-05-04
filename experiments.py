@@ -621,7 +621,7 @@ class RealExperiment(Experiment):
 class CategoricalExperiment(RealExperiment):
     ''' TODO experiment using real simple data '''
     def __init__(self):
-        super().__init__(distance_fn=lambda x, y: (1 if x == y else 0))
+        super().__init__(eval_fn=lambda x, y: (1 if x == y else 0))
 
 
 # semi-supervised learning
