@@ -233,7 +233,7 @@ class Experiment():
         ''' trains and predicts using MAS, BAU, and SAD methods '''
         if self.stan_data is None:
             raise ValueError("Must setup stan_data first")
-        stan_model = utils.stanmodel("mas1", overwrite=False)
+        stan_model = utils.stanmodel("mas", overwrite=False)
         self.stan_data["use_uerr"] = use_uerr
         self.stan_data["use_diff"] = use_diff
         self.stan_data["use_norm"] = 1
