@@ -139,3 +139,29 @@ def visualize_embeddings(stan_data, opt, sim_df=None, preds={}):
         plt.ylim(-scale, scale)
         plt.show()
 
+def avg_merge_fn(values, weights):
+    return np.array([values[i] * weights[i] for i in range(len(values))]).sum(axis=0) / np.sum(weights)
+
+def bordacount_merge_fn(values, weights):
+    # input values are ranked lists of integers
+    n = np.max([np.max(v) for v in values])
+    points = np.zeros(n)
+    for rankedlist, weight in zip(values, weights):
+        for i, element in enumerate(rankedlist):
+            points[element] += (n - i) * weight
+    return np.argsort(-points)
+
+def vectorrange_merge_fn(annotations, weights): # TODO weights
+    non_empty = [anno for anno in annotations if len(anno) > 0]
+    frac_non_empty = len(non_empty) / len(annotations)
+    if frac_non_empty < 0.5:
+        return []
+    else:
+        vrs = [vr for annotation in non_empty for vr in annotation]
+        start = [int(x) for x in np.round(np.array([vr.start_vector for vr in vrs]).mean(axis=0))]
+        end = [int(x) for x in np.round(np.array([vr.end_vector for vr in vrs]).mean(axis=0))]
+        if isinstance(vrs[0], SeqRange):
+            return [SeqRange((start, end))]
+        else:
+            return [VectorRange(start, end)]
+        
