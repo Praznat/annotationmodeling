@@ -89,6 +89,11 @@ class DecompositionExperiment(experiments.RealExperiment):
         self.gran_exp.setup(granno_df, merge_index="origItemID")
         self.gran_exp_orc.setup(granno_df_orc, merge_index="origItemID")
 
+    def register_weighted_merge(self):
+        self.gran_exp.merge_fn = self.merge_fn
+        self.gran_exp_orc.merge_fn = self.merge_fn
+        super().register_weighted_merge()
+
     def train(self, dem_iter, mas_iter):
         super().train(dem_iter=dem_iter, mas_iter=mas_iter)
         self.gran_exp.train(dem_iter=dem_iter, mas_iter=mas_iter)
@@ -111,6 +116,7 @@ class PICOExperiment(DecompositionExperiment):
         self.rawdf = pd.read_json("data/PICO/PICO-annos-crowdsourcing.json", lines=True)
         self.aggdf = pd.read_json("data/PICO/PICO-annos-crowdsourcing-agg.json", lines=True)
         self.golddf = pd.read_json("data/PICO/PICO-annos-professional.json", lines=True)
+        self.merge_fn = merge_functions.vectorrange_merge
 
     def setup(self):
         userIDs = []
@@ -149,6 +155,7 @@ class BBExperiment(DecompositionExperiment):
 
     def __init__(self, eval_fn, dist_fn, **kwargs):
         super().__init__(eval_fn=iou_score_multi,label_colname="annotation", item_colname="item", uid_colname="uid")
+        self.merge_fn = merge_functions.vectorrange_merge
         # np.random.seed(42)
         with open('data/gt_canary_od_pretty_02042020.json') as f:
             self.dataset = json.load(f)
@@ -255,6 +262,34 @@ class NERExperiment(experiments.RealExperiment):
 
         super().setup(anno_df, gold_df, c_gold_label="annotation")
 
+class RationalesExperiment(experiments.CategoricalExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        if eval_fn is None:
+            eval_fn = lambda x,y: (1 if x["cat"] == y["cat"] else 0)
+        super().__init__(eval_fn=eval_fn, distance_fn=dist_fn)
+        self.data_dir = "data/webcrowd25k/crowd_judgements.csv"
+        self.gold_dir = "data/webcrowd25k/gold_judgements.txt"
+    def setup(self):
+        allannodf = pd.read_csv(self.data_dir, sep=",", error_bad_lines=False, header=0,
+                    names=["uid","_1","url","_2","relevance_label","_3","tid","_4","rationale","duration","item","_5"])
+        allgolddf = pd.read_csv(self.gold_dir, sep=" ", error_bad_lines=False, header=0,
+                    names=["tid", "_", "item", "relevance_gold"])
+        TOPIC_ID = [259,267] # find ones where AGG underperforms RU
+        annodf = allannodf[allannodf["tid"].isin(TOPIC_ID)].copy()
+        golddf = allgolddf[allgolddf["tid"].isin(TOPIC_ID)].copy()
+        annodf["annotation"] = [{"cat":cat, "rat":rat} for cat, rat in zip(annodf["relevance_label"], annodf["rationale"])]
+        golddf["gold"] = [{"cat":cat, "rat":None} for cat in golddf["relevance_gold"]]
+        super().setup(annodf, golddf, c_anno_label="annotation", c_gold_label="gold")
+
+class SimRankingExperiment(experiments.RankerExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        super().__init__(base_dir="data/qrels.all.txt")
+        self.distance_fn = lambda x,y: 1 - self.eval_fn(x, y)
+        self.merge_fn = merge_functions.numerical_mean = merge_functions.borda_count
+    
+    def setup(self):
+        super().setup(n_items=100, n_users=20, pct_items=0.2, uerr_a=1, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
+
 def test_NER(debug=True):
     eval_fns = {}
     dist_fns = {}
@@ -301,9 +336,9 @@ def test_experiment(experiment_name,
                 print("\n", eval_name, dist_name)
             the_experiment = experiment_factory(eval_fn=eval_fn, dist_fn=dist_fn)
             the_experiment.setup()
+            return(the_experiment.describe_data())
             the_experiment.train(dem_iter=dem_iter, mas_iter=mas_iter)
-            if hasattr(the_experiment, "merge_fn"):
-                the_experiment.register_weighted_merge()
+            the_experiment.register_weighted_merge()
             the_experiment.test(debug=False)
             for method_name, score in the_experiment.scoreboard.items():
                 if debug:

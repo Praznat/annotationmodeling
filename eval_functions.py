@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy as np
+from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
+from nltk.translate.gleu_score import sentence_gleu
 
 def _tag(x, strict):
     return x or "" if strict else ""
@@ -72,3 +74,24 @@ def iou_score_multi(vrAs, vrBs):
 
 def rmse(x, y):
     return np.sqrt(np.mean(np.square(np.array(x) / 100 - np.array(y) / 100)))
+
+
+smoother = SmoothingFunction()
+
+def _bleu(x, y):
+    return sentence_bleu([x.split(" ")], y.split(" "), smoothing_function=smoother.method4)
+
+def bleu2way(x, y):
+    return (_bleu(x, y) + _bleu(y, x)) / 2
+
+def bleu_multi(x, y):
+    return sentence_bleu([xx.split(" ") for xx in x], y.split(" "), smoothing_function=smoother.method4)
+
+def _gleu(x, y):
+    return sentence_gleu([x.split(" ")], y.split(" "))
+
+def gleu2way(x, y):
+    return (_gleu(x, y) + _gleu(y, x)) / 2
+
+def gleu_multi(x, y):
+    return sentence_gleu([xx.split(" ") for xx in x], y.split(" "))

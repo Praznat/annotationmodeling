@@ -247,7 +247,7 @@ class Experiment():
         ''' trains and predicts using MAS, BAU, and SAD methods '''
         if self.stan_data is None:
             raise ValueError("Must setup stan_data first")
-        dem_model = utils.stanmodel("dem", overwrite=False)
+        dem_model = utils.stanmodel("dem2" if stan_data["NUSERS"] > 300 else "dem", overwrite=False)
         mas_model = utils.stanmodel("mas2", overwrite=False)
         self.stan_data["use_uerr"] = use_uerr
         self.stan_data["use_diff"] = use_diff
@@ -345,9 +345,13 @@ class Experiment():
         methods = {"sad":None, "bau":None, "dem":None, "mas":None}
         for method in methods.keys():
             self.annodf[F"{method}_dist"] = np.nan
+            self.annodf[F"{method}_wgt"] = 1 # only relevant for decomposition
+        self.annodf[F"orc_wgt"] = 1 # only relevant for decomposition
         methods["bau"] = user_avg_dist(self.stan_data, apply_empirical_prior=True)
         for i in range(self.stan_data["NITEMS"]):
             users = item_userset.get(i+1)
+            if users is None: # only relevant for decomposition
+                continue
             dem_logprobs = np.log(self.dem_opt["label_probabilities"] + 0.01)
             methods["dem"] = pd.Series({k+1:v for k, v in enumerate(-dem_logprobs[i])})
             methods["mas"] = pd.Series({k+1:v for k, v in enumerate(self.mas_opt["dist_from_truth"][i])})
@@ -361,7 +365,8 @@ class Experiment():
                     self.annodf.loc[idx, F"{methodname}_dist"] = distance
                     self.annodf.loc[idx, F"{methodname}_wgt"] = dist2wgt_fn(distance)
                     label = self.annodf.loc[idx, self.label_colname].values[0]
-                    self.annodf.loc[idx, F"orc_wgt"] = self.eval_fn(gold, label)
+                    oracle_wgt = self.eval_fn(gold, label) if gold is not None and label is not None else 0
+                    self.annodf.loc[idx, F"orc_wgt"] = oracle_wgt
 
     def weighted_merge(self, merge_fn, weights_colname=None):
         def agg_merge_fn(data):
@@ -702,8 +707,10 @@ class RealExperiment(Experiment):
 
 class CategoricalExperiment(RealExperiment):
     ''' TODO experiment using real simple data '''
-    def __init__(self):
-        super().__init__(eval_fn=lambda x, y: (1 if x == y else 0))
+    def __init__(self, eval_fn=None, distance_fn=None):
+        if eval_fn is None:
+            eval_fn = lambda x, y: (1 if x == y else 0)
+        super().__init__(eval_fn=eval_fn, distance_fn=distance_fn)
 
 
 # semi-supervised learning
