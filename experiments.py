@@ -1,4 +1,5 @@
 import os
+import time
 import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
@@ -218,6 +219,12 @@ def userset(data):
     result = set(data["u1s"]).union(set(data["u2s"]))
     return result
 
+def _prune_fn(data, ratio):
+    n_labels = len(data)
+    n_remaining_labels = max(2, int(np.round(n_labels * (1 - ratio))))
+    i = np.random.choice(len(data), n_remaining_labels)
+    return data.iloc[i]
+
 class Experiment():
     ''' Contains raw annotations, processed data, model parameters, predictions, and known gold '''
 
@@ -232,6 +239,7 @@ class Experiment():
         self.annodf = None
         self.golddict = {}
         self.scoreboard = {}
+        self.scoreboard_scores = {}
         self.badness_threshold = 0
         self.extra_baseline_labels = {}
 
@@ -243,11 +251,12 @@ class Experiment():
         per_item_user_rankings = get_model_user_rankings(opt, debug=False)
         return get_preds(self.annodf, per_item_user_rankings, self.label_colname, self.item_colname, self.uid_colname)
 
-    def train(self, use_uerr=1, use_diff=1, norm_ratio=1, dim_size=3, dem_iter=500, mas_iter=500, **kwargs):
+    def train(self, use_uerr=1, use_diff=1, norm_ratio=1, dim_size=3, dem_iter=500, mas_iter=500, num_samples=5, **kwargs):
         ''' trains and predicts using MAS, BAU, and SAD methods '''
         if self.stan_data is None:
             raise ValueError("Must setup stan_data first")
         dem_model = utils.stanmodel("dem2" if self.stan_data["NUSERS"] > 300 else "dem", overwrite=False)
+        # dem_model = utils.stanmodel("dem2", overwrite=False)
         mas_model = utils.stanmodel("mas2", overwrite=False)
         self.stan_data["use_uerr"] = use_uerr
         self.stan_data["use_diff"] = use_diff
@@ -279,12 +288,22 @@ class Experiment():
         # per_item_user_rankings_heu = heuristic.per_item_user_rankings(self.heu_scoreall)
         # self.heu_preds = get_preds(self.annodf, per_item_user_rankings_heu, self.label_colname, self.item_colname, self.uid_colname)
 
+        dem_start = time.time()
         self.dem_opt = dem_model.optimizing(data=self.stan_data, init=init, verbose=True, iter=dem_iter)
+        dem_end = time.time()
+        mas_start = time.time()
         self.mas_opt = mas_model.optimizing(data=self.stan_data, init=init, verbose=True, iter=mas_iter)
+        mas_end = time.time()
+        if True or kwargs.get("timer"):
+            print("dem", dem_end - dem_start)
+            print("mas", mas_end - mas_start)
 
         self.dem_preds = self.preds_from_opt(self.dem_opt) if dem_iter > 0 else None
         self.mas_preds = self.preds_from_opt(self.mas_opt) if mas_iter > 0 else None
 
+        self.rand_preds = []
+        for i in range(num_samples):
+            self.rand_preds.append(get_baseline_random(self.annodf, self.label_colname, self.item_colname))
         self.oracle_preds = get_oracle_preds(self.stan_data, self.annodf, self.label_colname, self.item_colname, self.uid_colname, self.eval_fn, self.golddict)
 
     def eval_model(self, random_scores, model_preds, modelname, num_samples, verbose=True):
@@ -292,7 +311,9 @@ class Experiment():
         model_scores = eval_preds(model_preds, self.golddict, self.eval_fn)
         model_scores *= num_samples
         self.scoreboard["RANDOM USER"] = np.mean(random_scores)
+        self.scoreboard_scores["RANDOM USER"] = random_scores
         self.scoreboard[modelname] = np.mean(model_scores)
+        self.scoreboard_scores[modelname] = model_scores
         if verbose:
             print(modelname)
             eval_scores_vs(random_scores, model_scores, self.badness_threshold)
@@ -310,8 +331,7 @@ class Experiment():
         if self.mas_opt is None:
             raise ValueError("Must train model first")
         random_scores = []
-        for i in range(num_samples):
-            random_preds = get_baseline_random(self.annodf, self.label_colname, self.item_colname)
+        for random_preds in self.rand_preds:
             random_scores += eval_preds(random_preds, self.golddict, self.eval_fn)
         self.eval_model(random_scores, self.bau_preds, "BEST AVAILABLE USER", num_samples, verbose=debug)
         if self.hon_preds is not None:
@@ -332,6 +352,25 @@ class Experiment():
                 params_model(self.simulator, self.mas_opt, self.stan_data)
             else:
                 diagnostics(self.mas_opt, self.stan_data)
+    
+    def calc_stat_sig(self):
+        self.stat_sig = {}
+        non_oracle_sb = {k:v for k, v in self.scoreboard.items() if "oracle" not in k.lower()}
+        maxscore_method = max(non_oracle_sb, key=non_oracle_sb.get)
+        maxscore_scores = self.scoreboard_scores.get(maxscore_method)
+        for methodname, scores in self.scoreboard_scores.items():
+            if "oracle" in methodname.lower():
+                continue
+            t_test = ttest(scores, maxscore_scores)
+            tstat = t_test.statistic
+            pval = t_test.pvalue
+            self.stat_sig[methodname] = pval
+
+
+    def statistical_significance(self, methodname):
+        if not hasattr(self, "stat_sig"):
+            self.calc_stat_sig()
+        return self.stat_sig.get(methodname)
 
     def calc_distmodel_scores(self, dist2wgt_fn=lambda x: 1/x):
         '''
@@ -523,6 +562,9 @@ class Experiment():
 
         cols = [nusers, nitems, nlabels, lperu, lperi, dupes]
         print(" & ".join(map(str, cols)))
+    
+    def prune_data(self, df, ratio):
+        return df.groupby(self.item_colname).apply(_prune_fn, ratio).reset_index(drop=self.item_colname)
 
     def remove_supervised(self, ngoldu):
         ''' ONLY FOR SIMULATOR EXPERIMENTS: remove semi-supervised items from test set '''
@@ -577,6 +619,8 @@ class Experiment():
         self.dem_preds = self.get_merged_preds(granular_preds_dict=self.dem_preds)
         self.mas_preds = self.get_merged_preds(granular_preds_dict=self.mas_preds)
         self.oracle_preds = self.get_merged_preds(granular_preds_dict=self.oracle_preds)
+        for i in range(len(self.rand_preds)):
+            self.rand_preds[i] = self.get_merged_preds(granular_preds_dict=self.rand_preds[i])
         new_extra_baseline_labels = {}
         for k, v in self.extra_baseline_labels.items():
             new_extra_baseline_labels[k] = self.get_merged_preds(granular_preds_dict=v)
@@ -685,7 +729,7 @@ class RealExperiment(Experiment):
         self.distance_fn = distance_fn if distance_fn is not None else (lambda x,y: 1 - self.eval_fn(x, y))
     def produce_stan_data(self):
         self.stan_data = utils.calc_distances(self.annodf, self.distance_fn, label_colname=self.label_colname, item_colname=self.item_colname, uid_colname=self.uid_colname)
-    def setup(self, annodf, golddf=None, c_anno_uid=None, c_anno_item=None, c_anno_label=None, c_gold_item=None, c_gold_label=None, merge_index=None):
+    def setup(self, annodf, golddf=None, c_anno_uid=None, c_anno_item=None, c_anno_label=None, c_gold_item=None, c_gold_label=None, merge_index=None, prune_ratio=0):
         renamey = lambda y: self.label_colname if "label" in y else self.item_colname if "item" in y else self.uid_colname if "uid" in y else y
         localargs = locals()
         colrename = {localargs[k]:renamey(k) for k in localargs if "c_" in k and localargs[k] is not None}

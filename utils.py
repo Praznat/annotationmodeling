@@ -139,4 +139,21 @@ def visualize_embeddings(stan_data, opt, sim_df=None, preds={}):
         plt.ylim(-scale, scale)
         plt.show()
 
-        
+def plot_vectorrange(vr, color="b", alpha=0.3):
+    plt.plot([vr.start_vector[0], vr.end_vector[0]], [vr.start_vector[1], vr.start_vector[1]], color, alpha=alpha)
+    plt.plot([vr.start_vector[0], vr.start_vector[0]], [vr.start_vector[1], vr.end_vector[1]], color, alpha=alpha)
+    plt.plot([vr.start_vector[0], vr.end_vector[0]], [vr.end_vector[1], vr.end_vector[1]], color, alpha=alpha)
+    plt.plot([vr.end_vector[0], vr.end_vector[0]], [vr.start_vector[1], vr.end_vector[1]], color, alpha=alpha)
+
+def plot_annos(data, expmnt):
+    vrs = [vr for annotation in data["annotation"] for vr in annotation]
+    for vr in vrs:
+        plot_vectorrange(vr)
+    item = data["item"].values[0]
+    try:
+        for gvr in expmnt.golddict.get(item):
+            plot_vectorrange(gvr, "yo--", alpha=1)
+    except:
+        pass
+    plt.title(data["item"].values[0])
+    plt.show()

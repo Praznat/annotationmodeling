@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from difflib import SequenceMatcher
 from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
 from nltk.translate.gleu_score import sentence_gleu
 
@@ -95,3 +96,6 @@ def gleu2way(x, y):
 
 def gleu_multi(x, y):
     return sentence_gleu([xx.split(" ") for xx in x], y.split(" "))
+
+def strdistance(a, b):
+    return SequenceMatcher(None, a, b).ratio()

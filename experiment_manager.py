@@ -6,7 +6,7 @@ import numpy as np
 import experiments
 import utils
 import granularity
-from granularity import SeqRange, VectorRange, TaggedString
+from granularity import SeqRange, VectorRange, TaggedString, cluster_decomp
 from eval_functions import eval_f1, iou_score_multi, rmse
 import merge_functions
 
@@ -39,7 +39,7 @@ class ExperimentResult(pd.DataFrame):
     * Total average evaluation score
     * Extra arguments
     '''
-    def __init__(self, dataset_name, eval_fn_name, dist_fn_name, agg_method_name, preds, score, extra=None):
+    def __init__(self, dataset_name, eval_fn_name, dist_fn_name, agg_method_name, preds, score, ss, extra=None):
         result = {
             "Dataset name": [dataset_name],
             "Eval Fn name": [eval_fn_name],
@@ -47,6 +47,7 @@ class ExperimentResult(pd.DataFrame):
             "Agg method name": [agg_method_name],
             "Predicted": [preds],
             "Eval score": [score],
+            "Statistical significance": [ss],
             "Misc.": [extra]
         }
         super().__init__(result)
@@ -79,33 +80,51 @@ class DecompositionExperiment(experiments.RealExperiment):
 
     def __init__(self, eval_fn, label_colname, item_colname, uid_colname, distance_fn=None, **kwargs):
         super().__init__(eval_fn, label_colname, item_colname, uid_colname, distance_fn, **kwargs)
-        self.gran_exp = experiments.RealExperiment(self.eval_fn, self.label_colname, "newItemID", self.uid_colname)
-        self.gran_exp_orc = experiments.RealExperiment(self.eval_fn, self.label_colname, "newItemID", self.uid_colname)
+        # self.gran_exp = experiments.RealExperiment(self.eval_fn, self.label_colname, "newItemID", self.uid_colname)
+        # self.granno_df_cluster = experiments.RealExperiment(self.eval_fn, self.label_colname, "newItemID", self.uid_colname)
+        # self.gran_exp_orc = experiments.RealExperiment(self.eval_fn, self.label_colname, "newItemID", self.uid_colname)
+        self.gran_experiments = {}
+    
+    def register_gran_exp(self, name, granno_df):
+        gran_exp = experiments.RealExperiment(self.eval_fn, self.label_colname, "newItemID", self.uid_colname)
+        gran_exp.setup(granno_df, merge_index="origItemID")
+        self.gran_experiments[name] = gran_exp
         
-    def setup(self, annodf, golddf, c_gold_item=None, c_gold_label=None):
+    def setup(self, annodf, golddf, c_gold_item=None, c_gold_label=None, skip_gran=False):
         super().setup(annodf=annodf, golddf=golddf, c_gold_item=c_gold_item, c_gold_label=c_gold_label)
-        granno_df = granularity.fragment_by_overlaps(self)
-        granno_df_orc = granularity.fragment_by_overlaps(self, use_oracle=True)
-        self.gran_exp.setup(granno_df, merge_index="origItemID")
-        self.gran_exp_orc.setup(granno_df_orc, merge_index="origItemID")
+        if not skip_gran:
+            self.register_gran_exp("intersect", granularity.fragment_by_overlaps(self))
+            self.register_gran_exp("cluster", granularity.fragment_by_overlaps(self, decomp_fn=cluster_decomp))
+            self.register_gran_exp("oracle", granularity.fragment_by_overlaps(self, use_oracle=True))
 
     def register_weighted_merge(self):
-        self.gran_exp.merge_fn = self.merge_fn
-        self.gran_exp_orc.merge_fn = self.merge_fn
-        super().register_weighted_merge()
+        if hasattr(self, "merge_fn"):
+            for gran_experiment in self.gran_experiments.values():
+                gran_experiment.merge_fn = self.merge_fn
+            super().register_weighted_merge()
 
     def train(self, dem_iter, mas_iter):
         super().train(dem_iter=dem_iter, mas_iter=mas_iter)
-        self.gran_exp.train(dem_iter=dem_iter, mas_iter=mas_iter)
-        self.gran_exp_orc.train(dem_iter=dem_iter, mas_iter=mas_iter)
+        for gran_experiment in self.gran_experiments.values():
+            gran_experiment.train(dem_iter=dem_iter, mas_iter=mas_iter)
     
     def test(self, debug):
         super().test(debug=debug)
-        self.gran_exp.test_merged_granular(orig_golddict=self.golddict, debug=debug)
-        self.gran_exp_orc.test_merged_granular(orig_golddict=self.golddict, debug=debug)
-        gran_sb = {F"GRANULAR {k}": v for k, v in self.gran_exp.scoreboard.items()}
-        gran_orc_sb = {F"GRANULAR ORACLE {k}": v for k, v in self.gran_exp_orc.scoreboard.items()}
-        self.scoreboard = {**self.scoreboard, **gran_sb, **gran_orc_sb}
+        for name, gran_experiment in self.gran_experiments.items():
+            gran_experiment.test_merged_granular(orig_golddict=self.golddict, debug=debug)
+            gran_sb = {F"GRANULAR {name} {k}": v for k, v in gran_experiment.scoreboard.items()}
+            gran_sb_scores = {F"GRANULAR {name} {k}": v for k, v in gran_experiment.scoreboard_scores.items()}
+            self.scoreboard.update(gran_sb)
+            self.scoreboard_scores.update(gran_sb_scores)
+
+        # self.gran_exp.test_merged_granular(orig_golddict=self.golddict, debug=debug)
+        # self.gran_exp_orc.test_merged_granular(orig_golddict=self.golddict, debug=debug)
+        # gran_sb = {F"GRANULAR {k}": v for k, v in self.gran_exp.scoreboard.items()}
+        # gran_orc_sb = {F"GRANULAR ORACLE {k}": v for k, v in self.gran_exp_orc.scoreboard.items()}
+        # gran_sb_scores = {F"GRANULAR {k}": v for k, v in self.gran_exp.scoreboard_scores.items()}
+        # gran_orc_sb_scores = {F"GRANULAR ORACLE {k}": v for k, v in self.gran_exp_orc.scoreboard_scores.items()}
+        # self.scoreboard = {**self.scoreboard, **gran_sb, **gran_orc_sb}
+        # self.scoreboard_scores = {**self.scoreboard_scores, **gran_sb_scores, **gran_orc_sb_scores}
 
 
 class PICOExperiment(DecompositionExperiment):
@@ -153,8 +172,8 @@ class PICOExperiment(DecompositionExperiment):
 
 class BBExperiment(DecompositionExperiment):
 
-    def __init__(self, eval_fn, dist_fn, **kwargs):
-        super().__init__(eval_fn=iou_score_multi,label_colname="annotation", item_colname="item", uid_colname="uid")
+    def __init__(self, eval_fn=iou_score_multi, dist_fn=None, **kwargs):
+        super().__init__(eval_fn=eval_fn, label_colname="annotation", item_colname="item", uid_colname="uid")
         self.merge_fn = merge_functions.vectorrange_merge
         # np.random.seed(42)
         with open('data/gt_canary_od_pretty_02042020.json') as f:
@@ -163,7 +182,7 @@ class BBExperiment(DecompositionExperiment):
     def setup(self, **kwargs):
         cols = ["item", "uid", "annotation", "groundtruth"]
         NUM_ITEMS = kwargs.get("n_items") or 200
-        MAX_WORKERS_PER_ITEM = kwargs.get("max_workers_per_item") or 4
+        MAX_WORKERS_PER_ITEM = kwargs.get("max_workers_per_item") or 100
         i = 0
         rows = []
         for image_key, all_data in self.dataset.items():
@@ -183,15 +202,15 @@ class BBExperiment(DecompositionExperiment):
         df = pd.DataFrame(rows, columns=cols)
         df["annotation"] = df["annotation"].apply(convert2vr).dropna()
         df["groundtruth"] = df["groundtruth"].apply(convert2vr).dropna()
-        super().setup(annodf=df, golddf=df, c_gold_item="item", c_gold_label="groundtruth")
+        super().setup(annodf=df, golddf=df, c_gold_item="item", c_gold_label="groundtruth", **kwargs)
     
 
-class NERExperiment(experiments.RealExperiment):
-    def __init__(self, eval_fn, dist_fn, **kwargs):
+class NERExperiment(DecompositionExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
         if eval_fn is None:
-            eval_fn = lambda x,y: eval_f1(x, y, strict_range=False, strict_tag=True, str_spans=True)
+            eval_fn = lambda x,y: eval_f1(x, y, strict_range=False, strict_tag=False, str_spans=True)
         if dist_fn is None:
-            dist_fn = lambda x,y: 1 - eval_f1(x, y, strict_range=False, strict_tag=True, str_spans=True)
+            dist_fn = lambda x,y: 1 - eval_f1(x, y, strict_range=False, strict_tag=False, str_spans=True)
         super().__init__(eval_fn, "annotation", "item", "worker", dist_fn)
         self.data_dir = "../seqcrowd-acl17/task1/val/mturk_train_data/"
         self.gold_dir = "../seqcrowd-acl17/task1/val/ground_truth/"
@@ -304,23 +323,6 @@ def test_NER(debug=True):
 
     return test_experiment("NER", NERExperiment, eval_fns, dist_fns, debug=debug)
 
-    # results = []
-    # for eval_name, eval_fn in eval_fns.items():
-    #     for dist_name, dist_fn in dist_fns.items():
-    #         if debug:
-    #             print("\n", eval_name, dist_name)
-    #         ner_experiment = NERExperiment(eval_fn, dist_fn)
-    #         ner_experiment.setup()
-    #         ner_experiment.train(iter=0)
-    #         ner_experiment.test(debug=False)
-    #         for method_name, score in ner_experiment.scoreboard.items():
-    #             if debug:
-    #                 print(method_name, score)
-    #             results.append(ExperimentResult("NER", eval_name, dist_name, method_name, None, score))
-
-    # results_df = pd.concat([r.reset_index() for r in results])
-    # results_df.to_csv("NER_results.csv")
-    # return results_df
 
 def test_experiment(experiment_name,
                     experiment_factory,
@@ -328,25 +330,28 @@ def test_experiment(experiment_name,
                     dist_fn_dict={"default":None},
                     dem_iter=500,
                     mas_iter=500,
+                    prune_ratio=0,
                     debug=False):
     results = []
     for eval_name, eval_fn in eval_fn_dict.items():
         for dist_name, dist_fn in dist_fn_dict.items():
             if debug:
                 print("\n", eval_name, dist_name)
-            the_experiment = experiment_factory(eval_fn=eval_fn, dist_fn=dist_fn)
+            inputs = {"eval_fn": eval_fn, "dist_fn": dist_fn}
+            the_experiment = experiment_factory(**{k: v for k, v in inputs.items() if v is not None})
             the_experiment.setup()
-            return(the_experiment.describe_data())
+            print(the_experiment.describe_data())
             the_experiment.train(dem_iter=dem_iter, mas_iter=mas_iter)
             the_experiment.register_weighted_merge()
             the_experiment.test(debug=False)
             for method_name, score in the_experiment.scoreboard.items():
                 if debug:
                     print(method_name, score)
-                results.append(ExperimentResult(experiment_name, eval_name, dist_name, method_name, None, score))
+                ss = the_experiment.statistical_significance(method_name)
+                results.append(ExperimentResult(experiment_name, eval_name, dist_name, method_name, None, score, ss))
 
     results_df = pd.concat([r.reset_index() for r in results])
-    results_df.to_csv(F"{experiment_name}_results.csv")
+    results_df.to_csv(F"results/{experiment_name}_results.csv")
     return results_df
 
 if __name__ == '__main__':

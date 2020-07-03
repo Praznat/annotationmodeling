@@ -73,7 +73,6 @@ transformed parameters {
                 int u2 = active_users[i, n2];
                 if (u1 != u2) {
                     real dist = distance_matrices[i, u1, u2];
-                    // real scale = uerr[u2] * diff[i];
                     log_prob_n1 += normal_lpdf(dist | 0, scale);
                 }
             }
