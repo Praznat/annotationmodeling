@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import nltk
 from nltk.corpus import brown as browncorpus
 from nltk.parse import malt
 from PYEVALB import scorer as pyscorer
