@@ -257,7 +257,7 @@ class Experiment():
             raise ValueError("Must setup stan_data first")
         dem_model = utils.stanmodel("dem2" if self.stan_data["NUSERS"] > 300 else "dem", overwrite=False)
         # dem_model = utils.stanmodel("dem2", overwrite=False)
-        mas_model = utils.stanmodel("mas2", overwrite=False)
+        mas_model = utils.stanmodel("mas", overwrite=False)
         self.stan_data["use_uerr"] = use_uerr
         self.stan_data["use_diff"] = use_diff
         self.stan_data["use_norm"] = 1

@@ -181,8 +181,8 @@ class BBExperiment(DecompositionExperiment):
     
     def setup(self, **kwargs):
         cols = ["item", "uid", "annotation", "groundtruth"]
-        NUM_ITEMS = kwargs.get("n_items") or 200
-        MAX_WORKERS_PER_ITEM = kwargs.get("max_workers_per_item") or 100
+        NUM_ITEMS = kwargs.pop("n_items", None) or 200
+        MAX_WORKERS_PER_ITEM = kwargs.pop("max_workers_per_item", None) or 100
         i = 0
         rows = []
         for image_key, all_data in self.dataset.items():

@@ -90,6 +90,8 @@ def unionize_vectorrange_sequence(vectorranges):
     return vectorranges
 
 def cluster_decomp(vectorranges, use_centroids=True, do_plot=False):
+    if len(vectorranges) < 2:
+        return vectorranges
     if use_centroids:
         centroids = [vr.centroid() for vr in vectorranges]
         dists = euclidean_distances(centroids)
