@@ -758,6 +758,19 @@ class CategoricalExperiment(RealExperiment):
 
 
 # semi-supervised learning
+def remove_supervised_items(expermnt):
+    for item in expermnt.supervised_items:
+        try:
+            del expermnt.golddict[item]
+        except:
+            pass
+
+def set_supervised_items_preset(expermnt, golditems, apply_fn=lambda x:x):
+    ''' when you have pre-decided gold items for semisupervised learning'''
+    expermnt.supervised_items = [expermnt.itemdict[x] for x in golditems]
+    expermnt.supervised_labels = [apply_fn(expermnt.golddict.get(item)) for item in expermnt.supervised_items]
+    assert expermnt.golddict is not None
+    remove_supervised_items(expermnt)
 
 def set_supervised_items(expermnt, n_supervised_items, apply_fn=lambda x:x, randomize=False):
     ''' when there is known gold available for semi-supervised learning,
@@ -769,11 +782,7 @@ def set_supervised_items(expermnt, n_supervised_items, apply_fn=lambda x:x, rand
     expermnt.supervised_labels = [apply_fn(expermnt.golddict.get(item)) for item in expermnt.supervised_items]
     assert expermnt.golddict is not None
     expermnt.golddict = expermnt.golddict.copy()
-    for item in expermnt.supervised_items:
-        try:
-            del expermnt.golddict[item]
-        except:
-            pass
+    remove_supervised_items(expermnt)
 
 def make_supervised_standata(expermnt, model_gold_err=-4):
     ''' adds semi-supervised items back to training set (not test set) and tells MAS they are known gold '''
