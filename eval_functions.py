@@ -3,6 +3,7 @@ import numpy as np
 from difflib import SequenceMatcher
 from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
 from nltk.translate.gleu_score import sentence_gleu
+from sklearn import metrics
 
 def _tag(x, strict):
     return x or "" if strict else ""
@@ -99,3 +100,11 @@ def gleu_multi(x, y):
 
 def strdistance(a, b):
     return SequenceMatcher(None, a, b).ratio()
+
+def apply_metric(gold_dict, pred_dict, metric, **kwargs):
+    gold_list = []
+    preds_list = []
+    for k, v in gold_dict.items():
+        gold_list.append(v)
+        preds_list.append(pred_dict[k])
+    return metric(gold_list, preds_list, **kwargs)
