@@ -61,7 +61,9 @@ class SimpleExperiment(experiments.RealExperiment):
                                 item_colname='question',
                                 uid_colname='worker',
                                 distance_fn=dist_fn)
-        self.merge_fn = merge_functions.numerical_mean
+
+    def set_merge_fn(self, merge_fn):
+        self.merge_fn = merge_fn
 
 class AffectExperiment(experiments.RealExperiment):
     
