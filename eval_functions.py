@@ -101,6 +101,7 @@ def gleu_multi(x, y):
 def strdistance(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
+#eval functions that operate on dictionaries
 def apply_metric(gold_dict, pred_dict, metric, **kwargs):
     gold_list = []
     preds_list = []
@@ -108,3 +109,12 @@ def apply_metric(gold_dict, pred_dict, metric, **kwargs):
         gold_list.append(v)
         preds_list.append(pred_dict[k])
     return metric(gold_list, preds_list, **kwargs)
+
+accuracy    = lambda gold, preds: apply_metric(gold, preds, metrics.accuracy_score)
+f1_weighted = lambda gold, preds: apply_metric(gold, preds, metrics.f1_score, average='weighted')
+f1_macro    = lambda gold, preds: apply_metric(gold, preds, metrics.f1_score, average='macro')
+mae         = lambda gold, preds: apply_metric(gold, preds, metrics.mean_absolute_error)
+mse         = lambda gold, preds: apply_metric(gold, preds, metrics.mean_squared_error)
+
+def score_predictions(gold_dict, pred_dict, eval_fn):
+    return {k: eval_fn(gold_dict[k], pred_dict[k]) for k, v in gold_dict.items()}
