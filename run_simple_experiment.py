@@ -80,11 +80,13 @@ def test_simple_experiment(experiment_name,
             exp = experiment_factory(eval_fn=eval_fn, dist_fn=dist_fn)
             exp.setup(full_df, full_df[['question', 'truth']], c_gold_label='truth')
 
+            # TODO: setup() calls produce_stan_data(), even in semisupervised cases
             if supervised_items is not None:
-                experiments.set_supervised_items_preset(exp, supervised_items)
+                renamed_supervised_items = experiments.rename_items(exp, supervised_items)
+                experiments.set_supervised_items_preset(exp, renamed_supervised_items)
                 experiments.make_supervised_standata(exp)
-            else:
-                exp.produce_stan_data()
+            # else:
+            #     exp.produce_stan_data()
 
             exp.train(dem_iter=dem_iter, mas_iter=mas_iter)
 
@@ -110,8 +112,10 @@ def test_simple_experiment(experiment_name,
                                                 metrics_fns,
                                                 score_fn)
 
-            rename_scores_dict = lambda scoresdict, itemdict: {item: scoresdict[nitem] for item, nitem in itemdict.items()}
-            scores_dict_renamed = {method: rename_scores_dict(d, exp.itemdict) for method, d in scores_dict.items()}
+            ''' item names get renamed during the setup process.
+            We want to report the scores for each question, so we reverse the renaming ''' 
+            itemdict_reversed = {val: key for key, val in exp.itemdict.items()}
+            scores_dict_renamed = {method: {itemdict_reversed[item]: label for item, label in d.items()} for method, d in scores_dict.items()}
 
             scores_dict_outer[(eval_name, dist_name)] = scores_dict_renamed
             results += results_level
@@ -172,7 +176,7 @@ def main():
     suffix = args.suffix
 
     if supervision_amt > 0:
-        gold_file = args.gold_file[0]
+        gold_file = args.gold_file
         df_supervised_items = pd.read_csv(gold_file)
         supervised_items = df_supervised_items['question'].unique()
     else:
@@ -250,5 +254,5 @@ def main():
         #             writer.writerow([row['task'], row['mae'], row['mse']])
 
 
-
-main()
+if __name__ == "__main__":
+    main()
