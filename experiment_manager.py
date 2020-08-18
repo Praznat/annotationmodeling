@@ -52,6 +52,18 @@ class ExperimentResult(pd.DataFrame):
         }
         super().__init__(result)
 
+class SimpleExperiment(experiments.RealExperiment):
+    def __init__(self, **kwargs):
+        eval_fn = kwargs['eval_fn']
+        dist_fn = kwargs['dist_fn']
+        super().__init__(eval_fn=eval_fn,
+                                label_colname='answer',
+                                item_colname='question',
+                                uid_colname='worker',
+                                distance_fn=dist_fn)
+
+    def set_merge_fn(self, merge_fn):
+        self.merge_fn = merge_fn
 
 class AffectExperiment(experiments.RealExperiment):
     
