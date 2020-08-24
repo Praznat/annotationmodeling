@@ -218,7 +218,6 @@ def main():
     results['noise'] = noise
     results['suffix'] = suffix
 
-    print(scores_all)
     print(results)
     if log_dir:
 
