@@ -136,20 +136,20 @@ def main():
     parser = argparse.ArgumentParser(description='Run experiment on simple task')
 
     '''positional (required) arguments'''
-    parser.add_argument('task_name', type=str, help='task/dataset name')
-    parser.add_argument('task_type', type=str, help='task type (e.g. categorical, ordinal, numerical...)')
+    parser.add_argument('task_name', type=str, help='task/dataset name. The name provided will only affect how the output csv file is named')
+    parser.add_argument('task_type', type=str, help='task type (categorical, ordinal, numerical)'),
     parser.add_argument('answer_file', type=str, help='location of file with answer/labels')
     parser.add_argument('truth_file', type=str, help='location of file with truths')
 
     '''optional arguments'''
     parser.add_argument('--merge', dest='merge', action='store_const', const=True,
-                        help='run merge experiments?', metavar='MERGE', default=False)
+                        help='run the merging variations of MAS/SAD/BAU/MADD. Merge function is automatically determined by task type', metavar='MERGE', default=False)
 
     parser.add_argument('--log-results', dest='log_dir', type=str, 
                         help='write results to user-specified directory', metavar='RESULTS_DIR')
 
     parser.add_argument('--gold-file', dest='gold_file', type=str,
-                        help='User-provided distance function', metavar='GOLD_FILE')
+                        help='file with labeled gold items. Tells model to run in a semi-supervised manner', metavar='GOLD_FILE')
 
     '''just for logging purposes'''
 
@@ -157,9 +157,9 @@ def main():
     parser.add_argument('--semi-supervised', dest='supervision_amt', type=float, 
                         help='run task as semi-supervised', metavar='PCT_TRAINING_SET', default=0.0)
     #could all be condensed into one maybe
-    parser.add_argument('--fold', dest='fold', type=int, help='which fold?')
-    parser.add_argument('--noise', dest='noise', type=float, help='noise level')
-    parser.add_argument('--suffix', dest='suffix', type=str, help='label your trial (e.g. 1 or "test")')
+    parser.add_argument('--fold', dest='fold', type=int, help='fold of your semisupervised training data. Parameter does not affect how experiment runs and only creates a more descriptive output file.')
+    parser.add_argument('--noise', dest='noise', type=float, help='average noise or worker accuracy in answer file. Parameter does not affect how experiment runs and only creates a more descriptive output file.')
+    parser.add_argument('--suffix', dest='suffix', type=str, help='any other tag or suffix you want to give your results file')
 
     args = parser.parse_args()
     task_name = args.task_name
