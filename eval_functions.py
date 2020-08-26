@@ -42,6 +42,12 @@ def eval_f1(a_spans, b_spans, strict_range, strict_tag, str_spans):
     denom = (p + r)
     return 2 * p * r / denom if denom > 0 else 0
 
+def _score_multi(thingsA, thingsB, score_fn):
+    scoresA = [np.max([score_fn(thingA, thingB) for thingB in thingsB] + [0]) for thingA in thingsA]
+    scoresB = [np.max([score_fn(thingA, thingB) for thingA in thingsA] + [0]) for thingB in thingsB]
+    score = np.mean(scoresA + scoresB)
+    return 0 if np.isnan(score) else score
+
 def _iou_score(vrA, vrB):
     # determine the (x, y)-coordinates of the intersection rectangle
     xA = max(vrA.start_vector[0], vrB.start_vector[0])
@@ -65,13 +71,24 @@ def _iou_score(vrA, vrB):
     # return the intersection over union value
     return iou
 
-
 def iou_score_multi(vrAs, vrBs):
-    scoresA = [np.max([_iou_score(vrA, vrB) for vrB in vrBs] + [0]) for vrA in vrAs]
-    scoresB = [np.max([_iou_score(vrA, vrB) for vrA in vrAs] + [0]) for vrB in vrBs]
-    score = np.mean(scoresA + scoresB)
-    return 0 if np.isnan(score) else score
+    return _score_multi(vrAs, vrBs, _iou_score)
 
+def _oks_score(points1, points2, area_scale=None, per_keypoint_constant=1):
+    if area_scale is None:
+        p1scale = np.sqrt(np.mean(np.std(points1, axis=0)**2))
+        p2scale = np.sqrt(np.mean(np.std(points2, axis=0)**2))
+        area_scale = (p1scale + p2scale) / 2
+        if area_scale == 0:
+            return 1
+    denom = (area_scale * (per_keypoint_constant * 2)**2)
+    if denom == 0:
+        print("ZERO TIME", area_scale, per_keypoint_constant, points1, points2)
+    e = (points1 - points2)**2 / denom
+    return np.mean(np.exp(-np.mean(e, axis=1)))
+
+def oks_score_multi(points1, points2):
+    return _score_multi(points1, points2, _oks_score)
 
 def rmse(x, y):
     return np.sqrt(np.mean(np.square(np.array(x) / 100 - np.array(y) / 100)))

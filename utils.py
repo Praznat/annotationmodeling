@@ -6,6 +6,7 @@ from multiprocessing import Pool
 import pickle
 from matplotlib import pyplot as plt
 import pystan
+from scipy.cluster.hierarchy import dendrogram
 from sklearn.decomposition import PCA
 
 def stanmodel(modelname, overwrite):
@@ -29,6 +30,9 @@ def make_categorical(df, colname, overwrite=True):
     if overwrite:
         df[colname] = pd.Categorical(df[colname]).codes
     return dict(zip(orig, df[colname]))
+
+def flatten(listoflists):
+    return [item for sublist in listoflists for item in sublist]
 
 def translate_categorical(df, colname, coldict, drop_missing=True):
     df[colname] = np.array([coldict.get(i) for i in df[colname].dropna().values])
@@ -66,7 +70,7 @@ def translate_categorical(df, colname, coldict, drop_missing=True):
 #         r = list(p.starmap(calc_distances_foritem, args))
 #         return pd.concat([pd.DataFrame(d) for d in r]).to_dict(orient="list")
 
-def calc_distances(df, compare_fn, label_colname="label", item_colname="item", uid_colname="uid"):
+def calc_distances(df, compare_fn, label_colname, item_colname, uid_colname="uid"):
     items = []
     u1s = []
     u2s = []
@@ -100,6 +104,17 @@ def calc_distances(df, compare_fn, label_colname="label", item_colname="item", u
     stan_data["n_gold_users"] = 0
     stan_data["gold_user_err"] = 0
     return stan_data
+
+def rotate_via_numpy(xy, radians):
+    """Use numpy to build a rotation matrix and take the dot product."""
+    x, y = xy
+    c, s = np.cos(radians), np.sin(radians)
+    j = np.matrix([[c, s], [-s, c]])
+    m = np.dot(j, [x, y])
+    return np.array(m.T)
+
+def bounded_cauchy(scale, shape, abs_bound):
+    return np.maximum(np.minimum(np.random.standard_cauchy(shape) * scale, abs_bound), -abs_bound)
 
 def proper_score(model_scores, gold_scores, score_fn=np.square):
     map_ps = model_scores / np.sum(model_scores)
@@ -157,3 +172,24 @@ def plot_annos(data, expmnt):
         pass
     plt.title(data["item"].values[0])
     plt.show()
+
+def plot_dendrogram(model, **kwargs):
+    # Create linkage matrix and then plot the dendrogram
+
+    # create the counts of samples under each node
+    counts = np.zeros(model.children_.shape[0])
+    n_samples = len(model.labels_)
+    for i, merge in enumerate(model.children_):
+        current_count = 0
+        for child_idx in merge:
+            if child_idx < n_samples:
+                current_count += 1  # leaf node
+            else:
+                current_count += counts[child_idx - n_samples]
+        counts[i] = current_count
+
+    linkage_matrix = np.column_stack([model.children_, model.distances_,
+                                      counts]).astype(float)
+
+    # Plot the corresponding dendrogram
+    dendrogram(linkage_matrix, **kwargs)

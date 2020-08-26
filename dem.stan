@@ -50,7 +50,7 @@ transformed data {
     }
 }
 parameters {
-    // real<lower=0> uerr_prior_loc;
+    real<lower=0> uerr_prior_loc;
     // real<lower=0> diff_prior_loc;
     // real<lower=0> uerr_prior_scale;
     // real<lower=0> diff_prior_scale;
@@ -61,6 +61,7 @@ transformed parameters {
     matrix[NITEMS, NUSERS] label_logprobs;
     matrix[NITEMS, NUSERS] label_logprobabilities = rep_matrix(-666, NITEMS, NUSERS);
     matrix[NITEMS, NUSERS] label_probabilities = rep_matrix(0, NITEMS, NUSERS);
+
     for (i in 1:NITEMS) {
         int nlabels = n_itemlabels[i];
         vector[nlabels] probs;
@@ -87,8 +88,16 @@ transformed parameters {
     }
 }
 model {
-    // uerr ~ normal(uerr_prior_loc, uerr_prior_scale);
+
+    for (u in 1:n_gold_users) {
+        uerr[u] ~ normal(uerr_prior_loc + gold_user_err * uerr_prior_scale, uerr_prior_scale);
+    }
+    for (u in n_gold_users+1:NUSERS) {
+        uerr[u] ~ normal(uerr_prior_loc, uerr_prior_scale);
+    }
+
     // diff ~ normal(diff_prior_loc, diff_prior_scale);
+    uerr_prior_loc ~ gamma(2, 0.1);
     // uerr_prior_loc ~ normal(0, uerr_prior_loc_scale);
     // diff_prior_loc ~ normal(0, diff_prior_loc_scale);
 

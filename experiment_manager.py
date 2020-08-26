@@ -3,11 +3,12 @@ import json
 import random
 import pandas as pd
 import numpy as np
+from matplotlib import pyplot as plt
 import experiments
 import utils
 import granularity
 from granularity import SeqRange, VectorRange, TaggedString, cluster_decomp
-from eval_functions import eval_f1, iou_score_multi, rmse
+from eval_functions import eval_f1, iou_score_multi, rmse, oks_score_multi, _oks_score
 import merge_functions
 
 
@@ -80,10 +81,8 @@ class DecompositionExperiment(experiments.RealExperiment):
 
     def __init__(self, eval_fn, label_colname, item_colname, uid_colname, distance_fn=None, **kwargs):
         super().__init__(eval_fn, label_colname, item_colname, uid_colname, distance_fn, **kwargs)
-        # self.gran_exp = experiments.RealExperiment(self.eval_fn, self.label_colname, "newItemID", self.uid_colname)
-        # self.granno_df_cluster = experiments.RealExperiment(self.eval_fn, self.label_colname, "newItemID", self.uid_colname)
-        # self.gran_exp_orc = experiments.RealExperiment(self.eval_fn, self.label_colname, "newItemID", self.uid_colname)
         self.gran_experiments = {}
+        self.cluster_plotter = None
     
     def register_gran_exp(self, name, granno_df):
         gran_exp = experiments.RealExperiment(self.eval_fn, self.label_colname, "newItemID", self.uid_colname)
@@ -93,8 +92,9 @@ class DecompositionExperiment(experiments.RealExperiment):
     def setup(self, annodf, golddf, c_gold_item=None, c_gold_label=None, skip_gran=False):
         super().setup(annodf=annodf, golddf=golddf, c_gold_item=c_gold_item, c_gold_label=c_gold_label)
         if not skip_gran:
-            self.register_gran_exp("intersect", granularity.fragment_by_overlaps(self))
-            self.register_gran_exp("cluster", granularity.fragment_by_overlaps(self, decomp_fn=cluster_decomp))
+            # self.register_gran_exp("intersect", granularity.fragment_by_overlaps(self))
+            # self.register_gran_exp("cluster", granularity.fragment_by_overlaps(self, decomp_fn=cluster_decomp, dist_fn=_oks_score))
+            self.register_gran_exp("cluster", granularity.decomposition(self, decomp_fn=cluster_decomp, plot_fn=self.cluster_plotter))
             self.register_gran_exp("oracle", granularity.fragment_by_overlaps(self, use_oracle=True))
 
     def register_weighted_merge(self):
@@ -108,8 +108,8 @@ class DecompositionExperiment(experiments.RealExperiment):
         for gran_experiment in self.gran_experiments.values():
             gran_experiment.train(dem_iter=dem_iter, mas_iter=mas_iter)
     
-    def test(self, debug):
-        super().test(debug=debug)
+    def test(self, debug, **kwargs):
+        super().test(debug=debug, **kwargs)
         for name, gran_experiment in self.gran_experiments.items():
             gran_experiment.test_merged_granular(orig_golddict=self.golddict, debug=debug)
             gran_sb = {F"GRANULAR {name} {k}": v for k, v in gran_experiment.scoreboard.items()}
@@ -178,6 +178,7 @@ class BBExperiment(DecompositionExperiment):
         # np.random.seed(42)
         with open('data/gt_canary_od_pretty_02042020.json') as f:
             self.dataset = json.load(f)
+        self.cluster_plotter = utils.plot_vectorrange
     
     def setup(self, **kwargs):
         cols = ["item", "uid", "annotation", "groundtruth"]
@@ -300,11 +301,27 @@ class RationalesExperiment(experiments.CategoricalExperiment):
         golddf["gold"] = [{"cat":cat, "rat":None} for cat in golddf["relevance_gold"]]
         super().setup(annodf, golddf, c_anno_label="annotation", c_gold_label="gold")
 
+class SimKeypointsExperiment(DecompositionExperiment):
+    def __init__(self, eval_fn=oks_score_multi, dist_fn=None, **kwargs):
+        super().__init__(eval_fn=eval_fn, label_colname="annotation", item_colname="item", uid_colname="uid")
+        self.merge_fn = merge_functions.numerical_mean
+        def keypoint_plotter(annotation, color, alpha):
+            category = 1 #data["category"].iloc[i]
+            skeleton = self.simulator.category_id_skeletons[category]
+            for edge in skeleton:
+                if 0 not in annotation[edge].T:
+                    plt.plot(*annotation[edge].T, color + "--", alpha=alpha)
+        self.cluster_plotter = keypoint_plotter
+
+    def setup(self, **kwargs):
+        experiments.KeypointsExperiment.setup(self, n_items=100, n_users=20, pct_items=0.2, uerr_a=1, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
+        super().setup(annodf=self.annodf, golddf=self.simulator.df, c_gold_item="item", c_gold_label="gold", **kwargs)
+
 class SimRankingExperiment(experiments.RankerExperiment):
     def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
         super().__init__(base_dir="data/qrels.all.txt")
         self.distance_fn = lambda x,y: 1 - self.eval_fn(x, y)
-        self.merge_fn = merge_functions.numerical_mean = merge_functions.borda_count
+        self.merge_fn = merge_functions.borda_count
     
     def setup(self):
         super().setup(n_items=100, n_users=20, pct_items=0.2, uerr_a=1, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
@@ -328,7 +345,7 @@ def test_experiment(experiment_name,
                     experiment_factory,
                     eval_fn_dict={"default":None},
                     dist_fn_dict={"default":None},
-                    dem_iter=500,
+                    dem_iter=0,
                     mas_iter=500,
                     prune_ratio=0,
                     debug=False):

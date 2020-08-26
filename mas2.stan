@@ -13,6 +13,8 @@ data {
     int<lower=1, upper=NITEMS> items[NDATA];
     int<lower=1, upper=NUSERS> u1s[NDATA];
     int<lower=1, upper=NUSERS> u2s[NDATA];
+    int<lower=0, upper=NUSERS> n_gold_users; // first n_gold_users assumed to be gold
+    real gold_user_err;
     real distances[NDATA];
 
     # hyperparameters
@@ -43,20 +45,29 @@ transformed parameters {
     }
 }
 model {
-    // sigma ~ exponential(1);
+    sigma ~ exponential(1);
     uerr ~ normal(1, uerr_prior_scale);
     diff ~ normal(1, diff_prior_scale);
 
     for (i in 1:NITEMS) {
-        for (u in 1:NUSERS) {
-            // dist_from_truth[i, u] ~ normal(0, uerr_prior_scale);
+        for (gold_u in 1:n_gold_users) {
+            if (dist_from_truth[i, gold_u] != 666) {
+                item_user_errors_Z[i, gold_u] ~ normal(0, diff[i] * exp(uerr_prior_scale * gold_user_err));
+                // item_user_errors_Z[i, gold_u] ~ exponential(diff[i] * exp(uerr_prior_scale * gold_user_err));
+            }
+        }
+        for (u in (n_gold_users+1):NUSERS) {
+            // if is supervised item:
+            // known_dist[i, u] ~ normal(0, diff[i] * uerr[u]);
+            // else:
             if (dist_from_truth[i, u] != 666) {
-                dist_from_truth[i, u] ~ normal(0, diff[i] * uerr[u]);
-                // dist_from_truth[i, u] ~ normal(diff[i] + uerr[u], sigma2);
+                item_user_errors_Z[i, u] ~ normal(0, diff[i] * uerr[u]);
+                // item_user_errors_Z[i, u] ~ exponential(diff[i] * uerr[u]);
             }
         }
     }
 
+    // likelihood
     distances ~ normal(pred_distances, sigma);
 }
 generated quantities {

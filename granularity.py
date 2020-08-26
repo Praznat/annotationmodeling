@@ -2,11 +2,12 @@ import numpy as np
 import pandas as pd
 import copy
 from collections import defaultdict
+from matplotlib import pyplot as plt
 import sklearn
 from sklearn.cluster import AgglomerativeClustering, DBSCAN, OPTICS
 from sklearn.metrics.pairwise import euclidean_distances
 from eval_functions import strdistance, _iou_score
-from utils import plot_vectorrange
+from utils import plot_vectorrange, plot_dendrogram, flatten
 
 def merge_strset(strings):
     sets = [set(s.split(" ")) for s in strings]
@@ -82,17 +83,20 @@ class SeqRange(VectorRange):
     def __getitem__(self, item):
         return self.startend[item]
 
-def unionize_vectorrange_sequence(vectorranges):
+def unionize_vectorrange_sequence(vectorranges, **kwargs):
     vectorranges = copy.deepcopy(vectorranges)
     for dim in range(vectorranges[0].numdims):
         sortedvectorranges = sorted(vectorranges, key=lambda x:x[dim])
         vectorranges = sorted(list(set(sortedvectorranges)))
     return vectorranges
 
-def cluster_decomp(vectorranges, use_centroids=True, do_plot=False):
+def cluster_decomp(vectorranges, dist_fn=None, plot_fn=None):
     if len(vectorranges) < 2:
-        return vectorranges
-    if use_centroids:
+        if dist_fn is None:
+            print(vectorranges)
+        return [np.array([0])]
+        # return vectorranges if dist_fn is None else [np.array([0])]
+    if dist_fn is None:
         centroids = [vr.centroid() for vr in vectorranges]
         dists = euclidean_distances(centroids)
         mean_dist = np.std(dists)
@@ -100,13 +104,16 @@ def cluster_decomp(vectorranges, use_centroids=True, do_plot=False):
                                              distance_threshold=mean_dist)
         clustering.fit(centroids)
     else:
-        dists = np.array([[1 - _iou_score(a, b) for a in vectorranges] for b in vectorranges])
-        mean_dist = np.std(dists)
+        dists = np.array([[dist_fn([a], [b]) for a in vectorranges] for b in vectorranges])
+        # mean_dist = np.std(dists)
+        mean_dist = np.mean(np.median(dists, axis=0))
+        # print(mean_dist)
         clustering = AgglomerativeClustering(n_clusters=None,
                                              distance_threshold=mean_dist,
                                              affinity="precomputed",
-                                             linkage="average")
+                                             linkage="average") # single
         clustering.fit(dists)
+        # print(clustering.labels_)
         
     labels = clustering.labels_
     labeldict = defaultdict(list)
@@ -114,32 +121,35 @@ def cluster_decomp(vectorranges, use_centroids=True, do_plot=False):
         labeldict[label].append(i)
     result = []
     for indices in labeldict.values():
-        uv = unionize_vectorrange_sequence(np.array(vectorranges)[np.array(indices)])
-        result += uv
+        # uv = unionize_vectorrange_sequence(np.array(vectorranges)[np.array(indices)])
+        # result += uv
+        # uv = np.array(vectorranges)[np.array(indices)]
+        # result.append(uv)
+        result.append(np.array(indices))
     
-    if do_plot:
-        colors = ["r", "b", "g", "y", "m", "c", "k", "k--"]
-        try:
-            for i, vr in enumerate(vectorranges):
-                plot_vectorrange(vr, color=colors[labels[i]])
-            for vr in result:
-                plot_vectorrange(vr, color="ko--", alpha=1)
-            plt.show()
-        except Exception as e:
-            print(labels)
-            print(e)
-            pass
+    if plot_fn is not None:
+        colors = ["r", "b", "g", "y", "m", "c", "k"]
+        for i, vr in enumerate(vectorranges):
+            plot_fn(vr, color=colors[labels[i] % len(colors)], alpha=0.5)
+        # for vr in result:
+        #     plot_fn(vr, color="ko--", alpha=1)
+        plt.gca().invert_yaxis()
+        plt.show()
+        # clustering.distances_ = dists
+        # plot_dendrogram(clustering)
+        # plt.show()
     return result
 
-def fragment_by_overlaps(experiment, use_oracle=False, decomp_fn=unionize_vectorrange_sequence):
+def fragment_by_overlaps(experiment, use_oracle=False, decomp_fn=unionize_vectorrange_sequence, dist_fn=None):
     return _fragment_by_overlaps(experiment.annodf,
                                  experiment.uid_colname,
                                  experiment.item_colname,
                                  experiment.label_colname,
                                  decomp_fn,
+                                 dist_fn,
                                  experiment.golddict if use_oracle else None)
 
-def _fragment_by_overlaps(annodf, uid_colname, item_colname, label_colname, decomp_fn, oracle_golddict=None):
+def _fragment_by_overlaps(annodf, uid_colname, item_colname, label_colname, decomp_fn, dist_fn=None, oracle_golddict=None):
     resultdfs = []
     for item_id in annodf[item_colname].unique():
         idf = annodf[annodf[item_colname] == item_id]
@@ -170,7 +180,7 @@ def _fragment_by_overlaps(annodf, uid_colname, item_colname, label_colname, deco
                 print(e)
                 pass
         else:
-            regions = decomp_fn(vectorranges)
+            regions = decomp_fn(vectorranges, dist_fn=dist_fn)
         origItemID = []
         newItemID = []
         newItemVR = []
@@ -178,14 +188,76 @@ def _fragment_by_overlaps(annodf, uid_colname, item_colname, label_colname, deco
         label = []
         gold = []
         for region in regions:
+            # print(region)
+            # for element in regions:
+            #     origItemID.append(item_id)
+            #     newItemID.append(F"{item_id}-{region}")
+            #     newItemVR.append(region)
+            #     uid.append(row[uid_colname])
             for i, row in idf.iterrows():
-                origItemID.append(idf[item_colname].values[0])
-                newItemID.append(F"{idf[item_colname].values[0]}-{region}")
+                origItemID.append(item_id)
+                newItemID.append(F"{item_id}-{region}")
                 newItemVR.append(region)
                 uid.append(row[uid_colname])
                 label.append([vr for vr in row[label_colname] if region.intersects(vr)])
                 gold.append(None)
         resultdfs.append(pd.DataFrame({"origItemID":origItemID, "newItemID":newItemID, "newItemVR":newItemVR, uid_colname:uid, label_colname:label, "gold":gold}))
+    return pd.concat(resultdfs)
+
+def decomposition(experiment, decomp_fn, plot_fn=None):
+    resultdfs = []
+    annodf = experiment.annodf
+    uid_colname = experiment.uid_colname
+    item_colname = experiment.item_colname
+    label_colname = experiment.label_colname
+    dist_fn = experiment.distance_fn
+    resultdfs = []
+    for item_id in annodf[item_colname].unique():
+        idf = annodf[annodf[item_colname] == item_id]
+        uids = []
+        labels = []
+        intra_label_dists = []
+        for _, row in idf[[uid_colname, label_colname]].iterrows():
+            uid = row[uid_colname]
+            uid_labels = row[label_colname]
+            for label in uid_labels:
+                uids.append(uid)
+                labels.append(label)
+            if dist_fn is not None and len(uid_labels) > 1:
+                intra_label_dist_M = np.array([[dist_fn([a], [b]) for a in uid_labels if str(a) != str(b)] for b in uid_labels])
+                intra_label_dists.append(np.min(intra_label_dist_M))
+        print("MMM", intra_label_dists)
+        origItemID = []
+        newItemID = []
+        newItemVR = []
+        region_label_indices_list = decomp_fn(labels, dist_fn, plot_fn)
+        print(region_label_indices_list)
+        for region_i, region_label_indices in enumerate(region_label_indices_list):
+            region_uids = list(np.array(uids)[region_label_indices])
+            region_labels = [[l] for l in np.array(labels)[region_label_indices]]
+            if dist_fn is None:
+                uvs = unionize_vectorrange_sequence(flatten(region_labels))
+                # intersect_i = np.array([i for i in range(len(labels)) if uvs[0].intersects(labels[i])])
+                # region_labels = np.array(labels)[intersect_i]
+                # region_uids = np.array(uids)[intersect_i]
+                for uvi, uv in enumerate(uvs):
+                    uidlabel = {}
+                    for i, label in enumerate(labels):
+                        if uv.intersects(label):
+                            uid = uids[i]
+                            uidlabel.setdefault(uid, []).append(label)
+                
+                    resultdfs.append(pd.DataFrame({"origItemID":[item_id] * len(uidlabel),
+                                                "newItemID":[F"{item_id}-{region_i}-{uvi}"] * len(uidlabel),
+                                                uid_colname:list(uidlabel.keys()),
+                                                label_colname:list(uidlabel.values()),
+                                                }))
+            else:
+                resultdfs.append(pd.DataFrame({"origItemID":[item_id] * len(region_labels),
+                                            "newItemID":[F"{item_id}-{region_i}"] * len(region_labels),
+                                            uid_colname:region_uids,
+                                            label_colname:region_labels,
+                                            }))
     return pd.concat(resultdfs)
 
 def dist_center(vr1, vr2):
