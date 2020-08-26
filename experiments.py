@@ -793,22 +793,30 @@ class CategoricalExperiment(RealExperiment):
 
 
 # semi-supervised learning
-
-def set_supervised_items(expermnt, n_supervised_items, apply_fn=lambda x:x, randomize=False):
-    ''' when there is known gold available for semi-supervised learning,
-    call this after calling setup but before training to remove semi-supervised items from training and test set '''
-    most_annotated_items = expermnt.annodf.groupby(expermnt.item_colname).count()[expermnt.label_colname].sort_values(ascending=False)
-    expermnt.supervised_items = most_annotated_items.index.values[:n_supervised_items]
-    if randomize:
-        np.random.shuffle(expermnt.supervised_items)
-    expermnt.supervised_labels = [apply_fn(expermnt.golddict.get(item)) for item in expermnt.supervised_items]
-    assert expermnt.golddict is not None
-    expermnt.golddict = expermnt.golddict.copy()
+def remove_supervised_items(expermnt):
     for item in expermnt.supervised_items:
         try:
             del expermnt.golddict[item]
         except:
             pass
+
+def rename_items(expermnt, items):
+    return [expermnt.itemdict[x] for x in items]
+
+def set_supervised_items_preset(expermnt, golditems, apply_fn=lambda x:x):
+    ''' when you have pre-decided gold items for semisupervised learning,
+    call this after calling setup but before training to remove semi-supervised items from training and test set'''
+    expermnt.supervised_items = golditems
+    expermnt.supervised_labels = [apply_fn(expermnt.golddict.get(item)) for item in expermnt.supervised_items]
+    assert expermnt.golddict is not None
+    remove_supervised_items(expermnt)
+
+def set_supervised_items(expermnt, n_supervised_items, apply_fn=lambda x:x, randomize=False):
+    ''' when you want to simulate honeypot questions by using the most-answered items as gold,
+    call this after calling setup but before training to remove semi-supervised items from training and test set '''
+    most_annotated_items = expermnt.annodf.groupby(expermnt.item_colname).count()[expermnt.label_colname].sort_values(ascending=False)
+    golditems = most_annotated_items.index.values[:n_supervised_items]
+    set_supervised_items_preset(expermnt, golditems, apply_fn)
 
 def make_supervised_standata(expermnt, model_gold_err=-4):
     ''' adds semi-supervised items back to training set (not test set) and tells MAS they are known gold '''
