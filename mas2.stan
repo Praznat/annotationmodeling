@@ -39,9 +39,15 @@ transformed parameters {
         int u1 = u1s[n];
         int u2 = u2s[n];
         int item = items[n];
-        dist_from_truth[item, u1] = norm(item_user_errors_Z[item, u1]);
-        dist_from_truth[item, u2] = norm(item_user_errors_Z[item, u2]);
-        pred_distances[n] = norm(item_user_errors_Z[item, u1] - item_user_errors_Z[item, u2]);
+        vector[DIM_SIZE] iueZ2 = item_user_errors_Z[item, u2];
+        dist_from_truth[item, u2] = norm(iueZ2);
+        if (u1 > n_gold_users) {
+            dist_from_truth[item, u1] = norm(item_user_errors_Z[item, u1]);
+            pred_distances[n] = norm(item_user_errors_Z[item, u1] - iueZ2);
+        } else {
+            dist_from_truth[item, u1] = 0;
+            pred_distances[n] = norm(iueZ2);
+        }
     }
 }
 model {
@@ -50,19 +56,9 @@ model {
     diff ~ normal(1, diff_prior_scale);
 
     for (i in 1:NITEMS) {
-        for (gold_u in 1:n_gold_users) {
-            if (dist_from_truth[i, gold_u] != 666) {
-                item_user_errors_Z[i, gold_u] ~ normal(0, diff[i] * exp(uerr_prior_scale * gold_user_err));
-                // item_user_errors_Z[i, gold_u] ~ exponential(diff[i] * exp(uerr_prior_scale * gold_user_err));
-            }
-        }
         for (u in (n_gold_users+1):NUSERS) {
-            // if is supervised item:
-            // known_dist[i, u] ~ normal(0, diff[i] * uerr[u]);
-            // else:
             if (dist_from_truth[i, u] != 666) {
                 item_user_errors_Z[i, u] ~ normal(0, diff[i] * uerr[u]);
-                // item_user_errors_Z[i, u] ~ exponential(diff[i] * uerr[u]);
             }
         }
     }

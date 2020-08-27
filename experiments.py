@@ -815,7 +815,8 @@ def set_supervised_items(expermnt, n_supervised_items, apply_fn=lambda x:x, rand
     ''' when you want to simulate honeypot questions by using the most-answered items as gold,
     call this after calling setup but before training to remove semi-supervised items from training and test set '''
     most_annotated_items = expermnt.annodf.groupby(expermnt.item_colname).count()[expermnt.label_colname].sort_values(ascending=False)
-    golditems = most_annotated_items.index.values[:n_supervised_items]
+    most_annotated_indices = [i for i in most_annotated_items.index.values if i in expermnt.golddict]
+    golditems = most_annotated_indices[:n_supervised_items]
     set_supervised_items_preset(expermnt, golditems, apply_fn)
 
 def make_supervised_standata(expermnt, model_gold_err=-4):
