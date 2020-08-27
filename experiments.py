@@ -7,6 +7,8 @@ from scipy.stats import ttest_rel as ttest
 from sim_normvec import VectorSimulator, euclidist
 from sim_parser import ParserSimulator, ParsableStr, evalb
 from sim_ranker import RankerSimulator, kendaltauscore
+from eval_functions import oks_score_multi
+from sim_keypoints import KeypointSimulator
 from sim_segmentation import SegmentationSimulator, bb_intersection_over_union
 from simulation import BetaDist
 import utils
@@ -18,7 +20,7 @@ def params_model(sim, opt, stan_data, skip_gold=False):
     scatter_corr(opt["uerr"][start:], sim.err_rates[start:], title="User baseline")
     scatter_corr(opt.get("diff"), list(sim.difficulty_dict.values()), title="Item baseline")
 
-def user_avg_dist(stan_data, apply_empirical_prior=True):
+def user_avg_dist(stan_data, apply_empirical_prior=True, nusers=None, missing_penalty_pct=0.1):
     ''' BAU scores for each user = user's average distance across whole dataset '''
     sddf = pd.DataFrame(stan_data)
     s1 = sddf.groupby("u1s").sum()["distances"]
@@ -27,7 +29,12 @@ def user_avg_dist(stan_data, apply_empirical_prior=True):
     n2 = sddf.groupby("u2s").count()["distances"]
     count = n1.add(n2, fill_value=0)
     avg_distances = s1.add(s2, fill_value=0) / count
-    avg_distances = avg_distances.fillna(avg_distances.mean())
+    if nusers is None:
+        nusers = stan_data["NUSERS"]
+    index = range(1, nusers.values[0] if hasattr(nusers, "values") else nusers + 1)
+    avg_distances = avg_distances.reindex(index)
+    count = count.reindex(index).fillna(0)
+    avg_distances = avg_distances.fillna(avg_distances.mean() * np.exp(missing_penalty_pct))
     if apply_empirical_prior:
         prior_mu, prior_var = avg_distances.mean(), avg_distances.var()
         sddf["u1delta"] = np.square(sddf["distances"] - avg_distances[sddf["u1s"]].values)
@@ -35,6 +42,7 @@ def user_avg_dist(stan_data, apply_empirical_prior=True):
         v1 = sddf.groupby("u1s").sum()["u1delta"]
         v2 = sddf.groupby("u2s").sum()["u2delta"]
         var_distances = v1.add(v2, fill_value=0) / count
+        var_distances = var_distances.fillna(0.01)
         var_distances += 0.1 * prior_var # to avoid division by zero variance
         nominator = prior_mu / prior_var + count * avg_distances / var_distances
         denominator = 1 / prior_var + count / var_distances
@@ -77,24 +85,27 @@ def diagnostics(opt, stan_data):
     ''' print useful scatterplots for diagnosing MAS trained model results '''
     plt.rcParams.update({'font.size': 20})
 
-    plt.scatter(opt["pred_distances"], stan_data["distances"])
-    plt.xlabel("pred_distances")
-    plt.ylabel("distances")
-    plt.show()
-    uerr_b = user_avg_dist(stan_data)
+    if "pred_distances" in opt:
+        plt.scatter(opt["pred_distances"], stan_data["distances"])
+        plt.xlabel("pred_distances")
+        plt.ylabel("distances")
+        plt.show()
 
-    plt.scatter(opt["uerr"], uerr_b)
-    plt.xlabel("inferred $\gamma$")
-    plt.ylabel("user average distance")
-    plt.ylim()
-    plt.show()
+    if "uerr" in opt:
+        uerr_b = user_avg_dist(stan_data)
+        plt.scatter(opt["uerr"], uerr_b)
+        plt.xlabel("inferred $\gamma$")
+        plt.ylabel("user average distance")
+        plt.ylim()
+        plt.show()
 
-    diff = item_avg_dist(stan_data)
-    diffkeys = diff.index.values - 1
-    plt.scatter(opt["diff"][diffkeys], diff)
-    plt.xlabel("inferred diff")
-    plt.ylabel("avg item distance")
-    plt.show()
+    if "diff" in opt:
+        diff = item_avg_dist(stan_data)
+        diffkeys = diff.index.values - 1
+        plt.scatter(opt["diff"][diffkeys], diff)
+        plt.xlabel("inferred diff")
+        plt.ylabel("avg item distance")
+        plt.show()
 
 def pred_item(df, pred_uerr, label_colname, item_colname, uid_colname="uid"):
     ''' pick annotation per item according to lowest predicted user error '''
@@ -257,7 +268,7 @@ class Experiment():
             raise ValueError("Must setup stan_data first")
         dem_model = utils.stanmodel("dem2" if self.stan_data["NUSERS"] > 300 else "dem", overwrite=False)
         # dem_model = utils.stanmodel("dem2", overwrite=False)
-        mas_model = utils.stanmodel("mas", overwrite=False)
+        mas_model = utils.stanmodel("mas2", overwrite=False)
         self.stan_data["use_uerr"] = use_uerr
         self.stan_data["use_diff"] = use_diff
         self.stan_data["use_norm"] = 1
@@ -272,7 +283,8 @@ class Experiment():
         uerr_b = user_avg_dist(self.stan_data).values
         init = {
             "uerr_Z": uerr_b - np.mean(uerr_b),
-            "uerr": uerr_b
+            "uerr": uerr_b,
+            "diff": np.ones(self.stan_data["NITEMS"])
         } if self.stan_data["use_uerr"] else {}
 
         self.stan_data = {**self.stan_data, **kwargs}
@@ -294,9 +306,9 @@ class Experiment():
         mas_start = time.time()
         self.mas_opt = mas_model.optimizing(data=self.stan_data, init=init, verbose=True, iter=mas_iter)
         mas_end = time.time()
-        if True or kwargs.get("timer"):
-            print("dem", dem_end - dem_start)
-            print("mas", mas_end - mas_start)
+        # if True or kwargs.get("timer"):
+        #     print("dem", dem_end - dem_start)
+        #     print("mas", mas_end - mas_start)
 
         self.dem_preds = self.preds_from_opt(self.dem_opt) if dem_iter > 0 else None
         self.mas_preds = self.preds_from_opt(self.mas_opt) if mas_iter > 0 else None
@@ -347,11 +359,13 @@ class Experiment():
                 self.eval_model(random_scores, baseline_preds, baseline_name, num_samples, verbose=debug)
         self.eval_model(random_scores, self.oracle_preds, "ORACLE", num_samples, verbose=debug)
         if debug:
-            get_model_user_rankings(self.mas_opt, debug=True)
+            debug_model = kwargs.get("debug_model") or "mas"
+            debug_opt = getattr(self, F"{debug_model.lower()}_opt")
+            get_model_user_rankings(debug_opt, debug=True)
             if kwargs.get("diagnose_vs_sim") and self.simulator is not None:
-                params_model(self.simulator, self.mas_opt, self.stan_data)
+                params_model(self.simulator, debug_opt, self.stan_data)
             else:
-                diagnostics(self.mas_opt, self.stan_data)
+                diagnostics(debug_opt, self.stan_data)
     
     def calc_stat_sig(self):
         self.stat_sig = {}
@@ -395,7 +409,7 @@ class Experiment():
             methods["dem"] = pd.Series({k+1:v for k, v in enumerate(-dem_logprobs[i])})
             methods["mas"] = pd.Series({k+1:v for k, v in enumerate(self.mas_opt["dist_from_truth"][i])})
             iu_distances = sddf[sddf["items"]==i+1][["u1s", "u2s", "distances"]]
-            methods["sad"] = user_avg_dist(iu_distances, apply_empirical_prior=False)
+            methods["sad"] = user_avg_dist(iu_distances, apply_empirical_prior=False, nusers=self.stan_data["NUSERS"])
             gold = self.golddict.get(i)
             for u in users:
                 idx = (self.annodf[self.uid_colname]==u-1) & (self.annodf[self.item_colname]==i)
@@ -435,7 +449,7 @@ class Experiment():
             if not skip_miniplots:
                 print("item", str(i+1))
                 print(iu_distances)
-            sad = user_avg_dist(iu_distances, apply_empirical_prior=False)
+            sad = user_avg_dist(iu_distances, apply_empirical_prior=False, nusers=self.stan_data["NUSERS"])
             sad_scores = [sad.loc[u] for u in users]
             bau_scores = [bau.loc[u] for u in users]
             # if len(iue[0]) > 2:
@@ -579,7 +593,11 @@ class Experiment():
         else:
             gran_preds = np.array(list(granular_preds_dict.values()))
             def mergeback(data):
-                return sorted(np.concatenate(gran_preds[data[self.item_colname].unique()]))
+                item_gran_preds = np.concatenate(gran_preds[data[self.item_colname].unique()])
+                try:
+                    item_gran_preds = sorted(item_gran_preds)
+                finally:
+                    return item_gran_preds
             merged_preds = self.annodf.groupby(self.merge_index_colname).apply(mergeback)
             return dict(merged_preds)
     
@@ -686,6 +704,23 @@ class RankerExperiment(Experiment):
     def setup_standard(self):
         self.setup(n_items=100, n_users=20, pct_items=0.2, uerr_a=-1.0, uerr_b=0.8, difficulty_a=-2.0, difficulty_b=1.3, ngoldu=0)
 
+class KeypointsExperiment(Experiment):
+    ''' experiment using simulated keypoint data '''
+    def __init__(self):
+        super().__init__("annotation", "item")
+        self.eval_fn = oks_score_multi
+    def setup(self, n_items, n_users, pct_items, uerr_a, uerr_b, difficulty_a, difficulty_b, ngoldu=0):
+        self.simulator = KeypointSimulator(max_items=n_items)
+        self.stan_data = self.simulator.create_stan_data_scenario(n_users=n_users, pct_items=pct_items,
+                                                    uerr_a=uerr_a, uerr_b=uerr_b,
+                                                    difficulty_a=difficulty_a, difficulty_b=difficulty_b,
+                                                    n_gold_users=ngoldu)
+        self.golddict = self.simulator.df.gold.to_dict()
+        self.annodf = self.simulator.sim_df
+        self.remove_supervised(ngoldu)
+    def setup_standard(self):
+        self.setup(n_items=100, n_users=20, pct_items=0.2, uerr_a=-1.0, uerr_b=0.8, difficulty_a=-2.0, difficulty_b=1.3, ngoldu=0)
+
 class SegmentationExperiment(Experiment):
     ''' experiment using simulated bounding box data '''
     def __init__(self, base_dir):
@@ -780,7 +815,8 @@ def set_supervised_items(expermnt, n_supervised_items, apply_fn=lambda x:x, rand
     ''' when you want to simulate honeypot questions by using the most-answered items as gold,
     call this after calling setup but before training to remove semi-supervised items from training and test set '''
     most_annotated_items = expermnt.annodf.groupby(expermnt.item_colname).count()[expermnt.label_colname].sort_values(ascending=False)
-    golditems = most_annotated_items.index.values[:n_supervised_items]
+    most_annotated_indices = [i for i in most_annotated_items.index.values if i in expermnt.golddict]
+    golditems = most_annotated_indices[:n_supervised_items]
     set_supervised_items_preset(expermnt, golditems, apply_fn)
 
 def make_supervised_standata(expermnt, model_gold_err=-4):
