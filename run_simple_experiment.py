@@ -226,15 +226,19 @@ def main():
         assert(len(scores_all) == 1)
         scores_dict = list(scores_all.items())[0][1]
 
+        suffix_str = ''
+        if suffix:
+            suffix_str = f'_{suffix}'
+
         for method, scores in scores_dict.items():
-            with open(f'{log_dir}/{method.lower()}_scores_{task_name}_{suffix}.csv', 'w') as file:
+            with open(f'{log_dir}/{method.lower()}_scores_{task_name}_sup{supervision_amt}_noise{noise}{suffix_str}.csv', 'w') as file:
                 writer = csv.writer(file)
                 for item, val in scores.items():
                     writer.writerow([item,val])
 
 
-        filename = f"{log_dir}/results_{task_name}_{suffix}.csv"
-        results.to_csv(filename, mode='w', header=True, index=False)
+        filename = f"{log_dir}/results_{task_name}{suffix_str}.csv"
+        results.to_csv(filename, mode='a', header=True, index=False)
 
 
         ''' to fit with the old formatting requirements '''
