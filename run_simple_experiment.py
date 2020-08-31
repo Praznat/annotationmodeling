@@ -199,7 +199,7 @@ def main():
         if task_type == 'numerical':
             merge_fn = merge_functions.numerical_mean
         else:
-            merge_fn = merge_functions.numerical_mean_rounded
+            merge_fn = lambda v, w: merge_functions.numerical_mean(v, w, rounded=True)
 
     elif task_type == 'categorical':
         eval_fn_dict = {"exact match eval": lambda x, y: 1 if x == y else 0}
