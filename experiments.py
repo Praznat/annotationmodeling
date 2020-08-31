@@ -763,7 +763,6 @@ class RealExperiment(Experiment):
         self.eval_fn = eval_fn
         self.distance_fn = distance_fn if distance_fn is not None else (lambda x,y: 1 - self.eval_fn(x, y))
     def produce_stan_data(self):
-        print("PRODUCING STAN DATA")
         self.stan_data = utils.calc_distances(self.annodf, self.distance_fn, label_colname=self.label_colname, item_colname=self.item_colname, uid_colname=self.uid_colname)
     def setup(self, annodf, golddf=None, c_anno_uid=None, c_anno_item=None, c_anno_label=None, c_gold_item=None, c_gold_label=None, merge_index=None, prune_ratio=0, run_produce_stan_data=True):
         renamey = lambda y: self.label_colname if "label" in y else self.item_colname if "item" in y else self.uid_colname if "uid" in y else y
