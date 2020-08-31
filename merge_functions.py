@@ -2,8 +2,11 @@ import pandas as pd
 import numpy as np
 from granularity import SeqRange, VectorRange
 
-def numerical_mean(values, weights):
-    return np.array([np.array(values[i]) * weights[i] for i in range(len(values))]).sum(axis=0) / np.sum(weights)
+def numerical_mean(values, weights, rounded=False):
+    weighted_vals = np.array([np.array(values[i]) * weights[i] for i in range(len(values))]).sum(axis=0) / np.sum(weights)
+    if rounded:
+        return np.around(weighted_vals)
+    return weighted_vals
 
 def borda_count(values, weights):
     # input values are ranked lists of integers
