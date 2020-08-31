@@ -78,15 +78,15 @@ def test_simple_experiment(experiment_name,
         for dist_name, dist_fn in dist_fn_dict.items():
 
             exp = experiment_factory(eval_fn=eval_fn, dist_fn=dist_fn)
-            exp.setup(full_df, full_df[['question', 'truth']], c_gold_label='truth')
+            exp.setup(full_df, full_df[['question', 'truth']], c_gold_label='truth', run_produce_stan_data=False)
 
             # TODO: setup() calls produce_stan_data(), even in semisupervised cases
             if supervised_items is not None:
                 renamed_supervised_items = experiments.rename_items(exp, supervised_items)
                 experiments.set_supervised_items_preset(exp, renamed_supervised_items)
                 experiments.make_supervised_standata(exp)
-            # else:
-            #     exp.produce_stan_data()
+            else:
+                exp.produce_stan_data()
 
             exp.train(dem_iter=dem_iter, mas_iter=mas_iter)
 
