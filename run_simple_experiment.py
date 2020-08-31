@@ -175,11 +175,13 @@ def main():
     noise = args.noise
     suffix = args.suffix
 
-    if supervision_amt > 0:
+    if gold_file is not None:
+        print("SUPERVISED")
         gold_file = args.gold_file
         df_supervised_items = pd.read_csv(gold_file)
         supervised_items = df_supervised_items['question'].unique()
     else:
+        print("UNSUPERVISED")
         supervised_items = None
 
     annotation_df = pd.read_csv(answer_file)
