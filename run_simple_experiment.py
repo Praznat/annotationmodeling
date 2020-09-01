@@ -78,15 +78,14 @@ def test_simple_experiment(experiment_name,
         for dist_name, dist_fn in dist_fn_dict.items():
 
             exp = experiment_factory(eval_fn=eval_fn, dist_fn=dist_fn)
-            exp.setup(full_df, full_df[['question', 'truth']], c_gold_label='truth')
+            exp.setup(full_df, full_df[['question', 'truth']], c_gold_label='truth', run_produce_stan_data=False)
 
-            # TODO: setup() calls produce_stan_data(), even in semisupervised cases
             if supervised_items is not None:
                 renamed_supervised_items = experiments.rename_items(exp, supervised_items)
                 experiments.set_supervised_items_preset(exp, renamed_supervised_items)
                 experiments.make_supervised_standata(exp)
-            # else:
-            #     exp.produce_stan_data()
+            else:
+                exp.produce_stan_data()
 
             exp.train(dem_iter=dem_iter, mas_iter=mas_iter)
 
@@ -136,30 +135,26 @@ def main():
     parser = argparse.ArgumentParser(description='Run experiment on simple task')
 
     '''positional (required) arguments'''
-    parser.add_argument('task_name', type=str, help='task/dataset name')
-    parser.add_argument('task_type', type=str, help='task type (e.g. categorical, ordinal, numerical...)')
+    parser.add_argument('task_name', type=str, help='task/dataset name. The name provided will only affect how the output csv file is named')
+    parser.add_argument('task_type', type=str, help='task type (categorical, ordinal, numerical)'),
     parser.add_argument('answer_file', type=str, help='location of file with answer/labels')
     parser.add_argument('truth_file', type=str, help='location of file with truths')
 
     '''optional arguments'''
     parser.add_argument('--merge', dest='merge', action='store_const', const=True,
-                        help='run merge experiments?', metavar='MERGE', default=False)
+                        help='run the merging variations of MAS/SAD/BAU/MADD. Merge function is automatically determined by task type', metavar='MERGE', default=False)
 
     parser.add_argument('--log-results', dest='log_dir', type=str, 
                         help='write results to user-specified directory', metavar='RESULTS_DIR')
 
     parser.add_argument('--gold-file', dest='gold_file', type=str,
-                        help='User-provided distance function', metavar='GOLD_FILE')
+                        help='file with labeled gold items. Tells model to run in a semi-supervised manner', metavar='GOLD_FILE')
 
     '''just for logging purposes'''
-
-    #could be calculated
-    parser.add_argument('--semi-supervised', dest='supervision_amt', type=float, 
-                        help='run task as semi-supervised', metavar='PCT_TRAINING_SET', default=0.0)
     #could all be condensed into one maybe
-    parser.add_argument('--fold', dest='fold', type=int, help='which fold?')
-    parser.add_argument('--noise', dest='noise', type=float, help='noise level')
-    parser.add_argument('--suffix', dest='suffix', type=str, help='label your trial (e.g. 1 or "test")')
+    parser.add_argument('--fold', dest='fold', type=int, help='fold of your semisupervised training data. Parameter does not affect how experiment runs and only creates a more descriptive output file.')
+    parser.add_argument('--noise', dest='noise', type=float, help='average noise or worker accuracy in answer file. Parameter does not affect how experiment runs and only creates a more descriptive output file.')
+    parser.add_argument('--suffix', dest='suffix', type=str, help='any other tag or suffix you want to give your results file')
 
     args = parser.parse_args()
     task_name = args.task_name
@@ -170,24 +165,28 @@ def main():
     merge = args.merge
     log_dir = args.log_dir
     gold_file = args.gold_file
-    supervision_amt = args.supervision_amt
     fold = args.fold
     noise = args.noise
     suffix = args.suffix
 
-    if supervision_amt > 0:
-        gold_file = args.gold_file
+    #read datasets
+    annotation_df = pd.read_csv(answer_file)
+    truth_df = pd.read_csv(truth_file).set_index('question')
+    full_df = annotation_df.join(truth_df, how='inner', on='question')
+
+    #read gold supervised items, if applicable
+    supervision_amt = 0.0
+    if gold_file is not None:
         df_supervised_items = pd.read_csv(gold_file)
         supervised_items = df_supervised_items['question'].unique()
+        supervision_amt = round(len(supervised_items) / full_df['question'].nunique(), 1)
     else:
         supervised_items = None
 
-    annotation_df = pd.read_csv(answer_file)
-    gold_df = pd.read_csv(truth_file).set_index('question')
-    full_df = annotation_df.join(gold_df, how='inner', on='question')
     print("USERS:", full_df['worker'].nunique())
     print("ITEMS:", full_df['question'].nunique())
     print("ANSWERS:", len(full_df))
+    print("SUPERVISION AMT:", supervision_amt)
 
     if task_type in ['numerical', 'ordinal']:
         dist_fn, eval_fn = make_numerical_fns(full_df)
@@ -197,7 +196,7 @@ def main():
         if task_type == 'numerical':
             merge_fn = merge_functions.numerical_mean
         else:
-            merge_fn = merge_functions.numerical_mean_rounded
+            merge_fn = lambda v, w: merge_functions.numerical_mean(v, w, rounded=True)
 
     elif task_type == 'categorical':
         eval_fn_dict = {"exact match eval": lambda x, y: 1 if x == y else 0}
@@ -218,7 +217,6 @@ def main():
     results['noise'] = noise
     results['suffix'] = suffix
 
-    print(scores_all)
     print(results)
     if log_dir:
 
@@ -227,15 +225,19 @@ def main():
         assert(len(scores_all) == 1)
         scores_dict = list(scores_all.items())[0][1]
 
+        suffix_str = ''
+        if suffix:
+            suffix_str = f'_{suffix}'
+
         for method, scores in scores_dict.items():
-            with open(f'{log_dir}/{method.lower()}_scores_{task_name}_{suffix}.csv', 'w') as file:
+            with open(f'{log_dir}/{method.lower()}_scores_{task_name}_sup{supervision_amt}_noise{noise}{suffix_str}.csv', 'w') as file:
                 writer = csv.writer(file)
                 for item, val in scores.items():
                     writer.writerow([item,val])
 
 
-        filename = f"{log_dir}/results_{task_name}_{suffix}.csv"
-        results.to_csv(filename, mode='w', header=True, index=False)
+        filename = f"{log_dir}/results_{task_name}{suffix_str}.csv"
+        results.to_csv(filename, mode='a', header=True, index=False)
 
 
         ''' to fit with the old formatting requirements '''
