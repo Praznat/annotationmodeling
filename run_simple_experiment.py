@@ -80,7 +80,6 @@ def test_simple_experiment(experiment_name,
             exp = experiment_factory(eval_fn=eval_fn, dist_fn=dist_fn)
             exp.setup(full_df, full_df[['question', 'truth']], c_gold_label='truth', run_produce_stan_data=False)
 
-            # TODO: setup() calls produce_stan_data(), even in semisupervised cases
             if supervised_items is not None:
                 renamed_supervised_items = experiments.rename_items(exp, supervised_items)
                 experiments.set_supervised_items_preset(exp, renamed_supervised_items)
@@ -152,10 +151,6 @@ def main():
                         help='file with labeled gold items. Tells model to run in a semi-supervised manner', metavar='GOLD_FILE')
 
     '''just for logging purposes'''
-
-    #could be calculated
-    parser.add_argument('--semi-supervised', dest='supervision_amt', type=float, 
-                        help='run task as semi-supervised', metavar='PCT_TRAINING_SET', default=0.0)
     #could all be condensed into one maybe
     parser.add_argument('--fold', dest='fold', type=int, help='fold of your semisupervised training data. Parameter does not affect how experiment runs and only creates a more descriptive output file.')
     parser.add_argument('--noise', dest='noise', type=float, help='average noise or worker accuracy in answer file. Parameter does not affect how experiment runs and only creates a more descriptive output file.')
@@ -170,26 +165,28 @@ def main():
     merge = args.merge
     log_dir = args.log_dir
     gold_file = args.gold_file
-    supervision_amt = args.supervision_amt
     fold = args.fold
     noise = args.noise
     suffix = args.suffix
 
+    #read datasets
+    annotation_df = pd.read_csv(answer_file)
+    truth_df = pd.read_csv(truth_file).set_index('question')
+    full_df = annotation_df.join(truth_df, how='inner', on='question')
+
+    #read gold supervised items, if applicable
+    supervision_amt = 0.0
     if gold_file is not None:
-        print("SUPERVISED")
-        gold_file = args.gold_file
         df_supervised_items = pd.read_csv(gold_file)
         supervised_items = df_supervised_items['question'].unique()
+        supervision_amt = round(len(supervised_items) / full_df['question'].nunique(), 1)
     else:
-        print("UNSUPERVISED")
         supervised_items = None
 
-    annotation_df = pd.read_csv(answer_file)
-    gold_df = pd.read_csv(truth_file).set_index('question')
-    full_df = annotation_df.join(gold_df, how='inner', on='question')
     print("USERS:", full_df['worker'].nunique())
     print("ITEMS:", full_df['question'].nunique())
     print("ANSWERS:", len(full_df))
+    print("SUPERVISION AMT:", supervision_amt)
 
     if task_type in ['numerical', 'ordinal']:
         dist_fn, eval_fn = make_numerical_fns(full_df)
