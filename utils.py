@@ -154,11 +154,14 @@ def visualize_embeddings(stan_data, opt, sim_df=None, preds={}):
         plt.ylim(-scale, scale)
         plt.show()
 
-def plot_vectorrange(vr, color="b", alpha=0.3):
+def plot_vectorrange(vr, color="b", alpha=0.3, text=None):
     plt.plot([vr.start_vector[0], vr.end_vector[0]], [vr.start_vector[1], vr.start_vector[1]], color, alpha=alpha)
     plt.plot([vr.start_vector[0], vr.start_vector[0]], [vr.start_vector[1], vr.end_vector[1]], color, alpha=alpha)
     plt.plot([vr.start_vector[0], vr.end_vector[0]], [vr.end_vector[1], vr.end_vector[1]], color, alpha=alpha)
     plt.plot([vr.end_vector[0], vr.end_vector[0]], [vr.start_vector[1], vr.end_vector[1]], color, alpha=alpha)
+    if text is not None:
+        x, y = vr.centroid()
+        plt.text(x, y, text, color=color)
 
 def plot_annos(data, expmnt):
     vrs = [vr for annotation in data["annotation"] for vr in annotation]

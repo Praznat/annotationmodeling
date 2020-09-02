@@ -104,7 +104,7 @@ class DecompositionExperiment(experiments.RealExperiment):
     def setup(self, annodf, golddf, c_gold_item=None, c_gold_label=None, skip_gran=False):
         super().setup(annodf=annodf, golddf=golddf, c_gold_item=c_gold_item, c_gold_label=c_gold_label)
         if not skip_gran:
-            # self.register_gran_exp("intersect", granularity.fragment_by_overlaps(self))
+            self.register_gran_exp("intersect", granularity.fragment_by_overlaps(self))
             # self.register_gran_exp("cluster", granularity.fragment_by_overlaps(self, decomp_fn=cluster_decomp, dist_fn=_oks_score))
             self.register_gran_exp("cluster", granularity.decomposition(self, decomp_fn=cluster_decomp, plot_fn=self.cluster_plotter))
             self.register_gran_exp("oracle", granularity.fragment_by_overlaps(self, use_oracle=True))
