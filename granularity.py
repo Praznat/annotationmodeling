@@ -185,12 +185,6 @@ def _fragment_by_overlaps(annodf, uid_colname, item_colname, label_colname, deco
         label = []
         gold = []
         for region in regions:
-            # print(region)
-            # for element in regions:
-            #     origItemID.append(item_id)
-            #     newItemID.append(F"{item_id}-{region}")
-            #     newItemVR.append(region)
-            #     uid.append(row[uid_colname])
             for i, row in idf.iterrows():
                 origItemID.append(item_id)
                 newItemID.append(F"{item_id}-{region}")
@@ -213,7 +207,6 @@ def decomposition(experiment, decomp_fn, plot_fn=None):
         idf = annodf[annodf[item_colname] == item_id]
         uids = []
         labels = []
-        # intra_label_dists = []
         num_latent = []
         for _, row in idf[[uid_colname, label_colname]].iterrows():
             uid = row[uid_colname]
@@ -222,9 +215,6 @@ def decomposition(experiment, decomp_fn, plot_fn=None):
             for label in uid_labels:
                 uids.append(uid)
                 labels.append(label)
-            # if dist_fn is not None and len(uid_labels) > 1:
-            #     intra_label_dist_M = np.array([[dist_fn([a], [b]) for a in uid_labels if str(a) != str(b)] for b in uid_labels])
-            #     intra_label_dists.append(np.min(intra_label_dist_M))
         est_num_latent = int(np.ceil(np.median(sorted(num_latent)[1:-1])) if len(num_latent) > 2 else np.max(num_latent))
         
         origItemID = []
@@ -235,37 +225,19 @@ def decomposition(experiment, decomp_fn, plot_fn=None):
         for region_i, region_label_indices in enumerate(region_label_indices_list):
             region_uids = list(np.array(uids)[region_label_indices])
             region_labels = [[l] for l in np.array(labels)[region_label_indices]]
-            if dist_fn is None:
-                uvs = unionize_vectorrange_sequence(flatten(region_labels))
-                # intersect_i = np.array([i for i in range(len(labels)) if uvs[0].intersects(labels[i])])
-                # region_labels = np.array(labels)[intersect_i]
-                # region_uids = np.array(uids)[intersect_i]
-                for uvi, uv in enumerate(uvs):
-                    uidlabel = {}
-                    for i, label in enumerate(labels):
-                        if uv.intersects(label):
-                            uid = uids[i]
-                            uidlabel.setdefault(uid, []).append(label)
-                
-                    resultdfs.append(pd.DataFrame({"origItemID":[item_id] * len(uidlabel),
-                                                "newItemID":[F"{item_id}-{region_i}-{uvi}"] * len(uidlabel),
-                                                uid_colname:list(uidlabel.keys()),
-                                                label_colname:list(uidlabel.values()),
-                                                }))
-            else:
-                remaining_uids = list(uid_set - set(region_uids))
-                remaining_labels = [[]] * len(remaining_uids)
-                region_uids += remaining_uids
-                region_labels += remaining_labels
-                dfdict = {
-                            uid_colname: region_uids,
-                            label_colname: region_labels,
-                         }
-                df = pd.DataFrame(dfdict)
-                df = df.groupby(uid_colname).agg(flatten).reset_index()
-                df["newItemID"] = F"{item_id}-{region_i}"
-                df["origItemID"] = item_id
-                resultdfs.append(df)
+            remaining_uids = list(uid_set - set(region_uids))
+            remaining_labels = [[]] * len(remaining_uids)
+            region_uids += remaining_uids
+            region_labels += remaining_labels
+            dfdict = {
+                        uid_colname: region_uids,
+                        label_colname: region_labels,
+                        }
+            df = pd.DataFrame(dfdict)
+            df = df.groupby(uid_colname).agg(flatten).reset_index()
+            df["newItemID"] = F"{item_id}-{region_i}"
+            df["origItemID"] = item_id
+            resultdfs.append(df)
     return pd.concat(resultdfs)
 
 def dist_center(vr1, vr2):
