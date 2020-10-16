@@ -7,10 +7,10 @@ from matplotlib import pyplot as plt
 import experiments
 import utils
 import granularity
-from granularity import SeqRange, VectorRange, TaggedString, cluster_decomp
+from granularity import SeqRange, VectorRange, TaggedString, cluster_decomp, create_oracle_decomp_fn, vr_from_string
 from eval_functions import eval_f1, iou_score_multi, rmse, oks_score_multi, _oks_score
 import merge_functions
-
+import ner_alignment
 
 def label2tvr(label, default=None):
     return default if label is None else [SeqRange(l) for l in label]
@@ -101,18 +101,20 @@ class DecompositionExperiment(experiments.RealExperiment):
         gran_exp.setup(granno_df, merge_index="origItemID")
         self.gran_experiments[name] = gran_exp
         
-    def setup(self, annodf, golddf, c_gold_item=None, c_gold_label=None, skip_gran=False):
+    def setup(self, annodf, golddf, c_gold_item=None, c_gold_label=None, skip_gran=False, **kwargs):
         super().setup(annodf=annodf, golddf=golddf, c_gold_item=c_gold_item, c_gold_label=c_gold_label)
         if not skip_gran:
-            self.register_gran_exp("intersect", granularity.fragment_by_overlaps(self))
-            # self.register_gran_exp("cluster", granularity.fragment_by_overlaps(self, decomp_fn=cluster_decomp, dist_fn=_oks_score))
+                # self.register_gran_exp("intersect", granularity.fragment_by_overlaps(self))
             self.register_gran_exp("cluster", granularity.decomposition(self, decomp_fn=cluster_decomp, plot_fn=self.cluster_plotter))
-            self.register_gran_exp("oracle", granularity.fragment_by_overlaps(self, use_oracle=True))
+            oracle_decomp = create_oracle_decomp_fn(self.golddict)
+            self.register_gran_exp("oracle", granularity.decomposition(self, decomp_fn=oracle_decomp, plot_fn=self.cluster_plotter))
+                # self.register_gran_exp("oracle", granularity.fragment_by_overlaps(self, use_oracle=True))
 
     def register_weighted_merge(self):
         if hasattr(self, "merge_fn"):
             for gran_experiment in self.gran_experiments.values():
                 gran_experiment.merge_fn = self.merge_fn
+                gran_experiment.register_weighted_merge()
             super().register_weighted_merge()
 
     def train(self, dem_iter, mas_iter):
@@ -123,14 +125,15 @@ class DecompositionExperiment(experiments.RealExperiment):
     def test(self, debug, **kwargs):
         super().test(debug=debug, **kwargs)
         for name, gran_experiment in self.gran_experiments.items():
-            gran_experiment.test_merged_granular(orig_golddict=self.golddict, debug=debug)
+            print(name)
+            gran_experiment.test_recombination(orig_golddict=self.golddict, debug=debug)
             gran_sb = {F"GRANULAR {name} {k}": v for k, v in gran_experiment.scoreboard.items()}
             gran_sb_scores = {F"GRANULAR {name} {k}": v for k, v in gran_experiment.scoreboard_scores.items()}
             self.scoreboard.update(gran_sb)
             self.scoreboard_scores.update(gran_sb_scores)
 
-        # self.gran_exp.test_merged_granular(orig_golddict=self.golddict, debug=debug)
-        # self.gran_exp_orc.test_merged_granular(orig_golddict=self.golddict, debug=debug)
+        # self.gran_exp.test_recombination(orig_golddict=self.golddict, debug=debug)
+        # self.gran_exp_orc.test_recombination(orig_golddict=self.golddict, debug=debug)
         # gran_sb = {F"GRANULAR {k}": v for k, v in self.gran_exp.scoreboard.items()}
         # gran_orc_sb = {F"GRANULAR ORACLE {k}": v for k, v in self.gran_exp_orc.scoreboard.items()}
         # gran_sb_scores = {F"GRANULAR {k}": v for k, v in self.gran_exp.scoreboard_scores.items()}
@@ -148,6 +151,7 @@ class PICOExperiment(DecompositionExperiment):
         self.aggdf = pd.read_json("data/PICO/PICO-annos-crowdsourcing-agg.json", lines=True)
         self.golddf = pd.read_json("data/PICO/PICO-annos-professional.json", lines=True)
         self.merge_fn = merge_functions.vectorrange_merge
+        self.cluster_plotter = utils.plot_seqrange
 
     def setup(self):
         userIDs = []
@@ -161,6 +165,8 @@ class PICOExperiment(DecompositionExperiment):
             data = row[1]["Participants"]
             gold = self.golddf[self.golddf["docid"] == itemID]["Participants"].values[0]
             gold = gold.get("MedicalStudent")
+            if gold is None:
+                continue
             agg = self.aggdf[self.aggdf["docid"] == itemID]["Participants"].values[0]
             for userID, label in data.items():
                 userIDs.append(userID)
@@ -193,37 +199,57 @@ class BBExperiment(DecompositionExperiment):
         self.cluster_plotter = utils.plot_vectorrange
     
     def setup(self, **kwargs):
-        cols = ["item", "uid", "annotation", "groundtruth"]
-        NUM_ITEMS = kwargs.pop("n_items", None) or 200
-        MAX_WORKERS_PER_ITEM = kwargs.pop("max_workers_per_item", None) or 100
-        i = 0
-        rows = []
-        for image_key, all_data in self.dataset.items():
-            i+=1
-            if i > NUM_ITEMS:
-                break
-            raw_annotations_dict = all_data['worker_answers']
-            gt = all_data['ground_truth']['annotations']
-            keys =  list(raw_annotations_dict.keys())
-            random.shuffle(keys)
-            
-            for worker_id in keys[:MAX_WORKERS_PER_ITEM]:
-                anno = raw_annotations_dict[worker_id]
-                stripped_anno = anno['answerContent']['boundingBox']['boundingBoxes']                                                      
-                row = [image_key, worker_id, stripped_anno, gt]
-                rows.append(row)
-        df = pd.DataFrame(rows, columns=cols)
-        df["annotation"] = df["annotation"].apply(convert2vr).dropna()
-        df["groundtruth"] = df["groundtruth"].apply(convert2vr).dropna()
-        super().setup(annodf=df, golddf=df, c_gold_item="item", c_gold_label="groundtruth", **kwargs)
-    
+        if kwargs.get("random_sample"):
+            cols = ["item", "uid", "annotation", "groundtruth"]
+            NUM_ITEMS = kwargs.pop("n_items", None) or 200
+            MAX_WORKERS_PER_ITEM = kwargs.pop("max_workers_per_item", None) or 100
+            i = 0
+            rows = []
+            for image_key, all_data in self.dataset.items():
+                i+=1
+                if i > NUM_ITEMS:
+                    break
+                raw_annotations_dict = all_data['worker_answers']
+                gt = all_data['ground_truth']['annotations']
+                keys =  list(raw_annotations_dict.keys())
+                random.shuffle(keys)
+                
+                for worker_id in keys[:MAX_WORKERS_PER_ITEM]:
+                    anno = raw_annotations_dict[worker_id]
+                    stripped_anno = anno['answerContent']['boundingBox']['boundingBoxes']                                                      
+                    row = [image_key, worker_id, stripped_anno, gt]
+                    rows.append(row)
+            df = pd.DataFrame(rows, columns=cols)
+            df["annotation"] = df["annotation"].apply(convert2vr).dropna()
+            df["groundtruth"] = df["groundtruth"].apply(convert2vr).dropna()
+            super().setup(annodf=df, golddf=df, c_gold_item="item", c_gold_label="groundtruth", **kwargs)
+        else:
+            bbdf = pd.read_csv("data/boundingbox_data.csv")
+            anno_vrs = []
+            list2vrs = lambda x: [vr_from_string(string) for string in x]
+            for anno_str in bbdf.annotation.values:
+                anno_str_json = anno_str.replace('(', '"(').replace(')', ')"')
+                anno_vr = list2vrs(json.loads(anno_str_json))
+                anno_vrs.append(anno_vr)
+            bbdf["annotation"] = anno_vrs
+            with open("data/boundingbox_gold.json") as f:
+                bbgold = json.load(f)
+            self.golddict = {int(k): list2vrs(v) for k, v in bbgold.items()}
+            super().setup(annodf=bbdf, golddf=None, **kwargs)
+
+        with open("data/boundingbox_gvanhorn_predictions.json") as f:
+            gvanhorn_preds = json.load(f)
+        list2vrs = lambda x: [VectorRange(t[0], t[1]) for t in x]
+        gvanhorn_preds = {int(k): list2vrs(v) for k, v in gvanhorn_preds.items()}
+        self.register_baseline("GVANHORN", gvanhorn_preds)
+
 
 class NERExperiment(DecompositionExperiment):
     def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
         if eval_fn is None:
-            eval_fn = lambda x,y: eval_f1(x, y, strict_range=False, strict_tag=False, str_spans=True)
+            eval_fn = lambda x,y: eval_f1(x, y, strict_range=False, strict_tag=False, str_spans=False)
         if dist_fn is None:
-            dist_fn = lambda x,y: 1 - eval_f1(x, y, strict_range=False, strict_tag=False, str_spans=True)
+            dist_fn = lambda x,y: 1 - eval_f1(x, y, strict_range=False, strict_tag=False, str_spans=False)
         super().__init__(eval_fn, "annotation", "item", "worker", dist_fn)
         self.data_dir = "../seqcrowd-acl17/task1/val/mturk_train_data/"
         self.gold_dir = "../seqcrowd-acl17/task1/val/ground_truth/"
@@ -264,7 +290,8 @@ class NERExperiment(DecompositionExperiment):
                     newspan = {"range":[start_i, i], "tag":curr_tag}
                     if start_i is not None and curr_tag != "O":
                         newspan["tag"] = newspan["tag"][2:]
-                        result.append(newspan)
+                        sr = SeqRange(newspan["range"], tag=newspan["tag"])
+                        result.append(sr)
                     start_i = i
                     curr_tag = token_label[1]
             return result
@@ -288,11 +315,11 @@ class NERExperiment(DecompositionExperiment):
 
         anno_df = clean(load(self.data_dir).sort_values("item"))
         gold_df = clean(load(self.gold_dir, isgold=True))
+        merged_df = ner_alignment.align(anno_df, gold_df)
+        merged_df["annotation"] = merged_df["annotation"].apply(raw2ranges)
+        merged_df["gold"] = merged_df["gold"].apply(raw2ranges)
 
-        anno_df["annotation"] = anno_df["clean_label"].apply(raw2NEs)
-        gold_df["annotation"] = gold_df["clean_label"].apply(raw2NEs)
-
-        super().setup(anno_df, gold_df, c_gold_label="annotation")
+        super().setup(merged_df, merged_df[["item", "gold"]], c_anno_label="annotation", c_gold_label="gold")
 
 class RationalesExperiment(experiments.CategoricalExperiment):
     def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
@@ -316,17 +343,20 @@ class RationalesExperiment(experiments.CategoricalExperiment):
 class SimKeypointsExperiment(DecompositionExperiment):
     def __init__(self, eval_fn=oks_score_multi, dist_fn=None, **kwargs):
         super().__init__(eval_fn=eval_fn, label_colname="annotation", item_colname="item", uid_colname="uid")
-        self.merge_fn = merge_functions.numerical_mean
-        def keypoint_plotter(annotation, color, alpha):
+        self.merge_fn = merge_functions.keypoint_merge
+        def keypoint_plotter(annotation, color="k", alpha=1, text=None, ax=None):
+            if ax is None:
+                ax = plt
             category = 1 #data["category"].iloc[i]
             skeleton = self.simulator.category_id_skeletons[category]
             for edge in skeleton:
                 if 0 not in annotation[edge].T:
-                    plt.plot(*annotation[edge].T, color + "--", alpha=alpha)
+                    ax.plot(*annotation[edge].T, color, alpha=alpha)
+                    # ax.plot(*annotation[edge].T, color + "--", alpha=alpha)
         self.cluster_plotter = keypoint_plotter
 
     def setup(self, **kwargs):
-        experiments.KeypointsExperiment.setup(self, n_items=100, n_users=20, pct_items=0.2, uerr_a=1, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
+        experiments.KeypointsExperiment.setup(self, n_items=100, n_users=20, pct_items=0.2, uerr_a=2, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
         super().setup(annodf=self.annodf, golddf=self.simulator.df, c_gold_item="item", c_gold_label="gold", **kwargs)
 
 class SimRankingExperiment(experiments.RankerExperiment):

@@ -214,7 +214,7 @@ def eval_scores_vs(baseline_scores, model_scores, badness_threshold):
 def eval_preds(preds, golds, eval_fn):
     ''' evaluate chosen annotations per item against known gold according to evaluation function '''
     scores = []
-    for i, gold in golds.items():
+    for i, gold in sorted(golds.items(), key=lambda x:x[0]):
         score = eval_fn(gold, preds[i]) if preds.get(i) is not None else 0
         scores.append(score)
     return scores
@@ -317,6 +317,9 @@ class Experiment():
         for i in range(num_samples):
             self.rand_preds.append(get_baseline_random(self.annodf, self.label_colname, self.item_colname))
         self.oracle_preds = get_oracle_preds(self.stan_data, self.annodf, self.label_colname, self.item_colname, self.uid_colname, self.eval_fn, self.golddict)
+
+    def score_preds(self, preds):
+        return np.array(eval_preds(preds, self.golddict, self.eval_fn))
 
     def eval_model(self, random_scores, model_preds, modelname, num_samples, verbose=True):
         ''' display comparison of model predictions vs baseline '''
@@ -587,33 +590,39 @@ class Experiment():
             for i in goldi:
                 del self.golddict[i]
     
-    def get_merged_preds(self, granular_preds_dict=None):
+    def get_recombined_preds(self, granular_preds_dict=None):
         if granular_preds_dict is None:
             return {}
         else:
-            gran_preds = np.array(list(granular_preds_dict.values()))
-            def mergeback(data):
-                item_gran_preds = np.concatenate(gran_preds[data[self.item_colname].unique()])
+            # gran_preds = np.array(list(granular_preds_dict.values()))
+            gran_preds = granular_preds_dict
+            def recombine(data):
+                item_ids = data[self.item_colname].unique()
+                item_gran_preds = utils.flatten([gran_preds[i] for i in item_ids])
                 try:
                     item_gran_preds = sorted(item_gran_preds)
                 finally:
                     return item_gran_preds
-            merged_preds = self.annodf.groupby(self.merge_index_colname).apply(mergeback)
-            return dict(merged_preds)
+            recombined_preds = self.annodf.groupby(self.merge_index_colname).apply(recombine)
+            return dict(recombined_preds)
     
     def backup_preds(self):
-        if not hasattr(self, "backup_preds"):
-            self.backup_preds = {
+        if not hasattr(self, "backup_preds_dict"):
+            self.backup_preds_dict = {
                 "bau_preds": self.bau_preds,
                 # "hon_preds": self.hon_preds,
                 "sad_preds": self.sad_preds,
                 # "heu_preds": self.heu_preds,
                 "dem_preds": self.dem_preds,
                 "mas_preds": self.mas_preds,
+                "oracle_preds": self.oracle_preds,
                 "gran_gold": self.golddict
             }
             for k, v in self.extra_baseline_labels.items():
-                self.backup_preds[k] = v
+                self.backup_preds_dict[k] = v
+        else:
+            for k, v in self.backup_preds_dict.items():
+                setattr(self, k, v)
     
     def register_weighted_merge(self):
         if not hasattr(self, "merge_fn"):
@@ -626,22 +635,22 @@ class Experiment():
         self.register_baseline("SAD Merge", self.weighted_merge(self.merge_fn, "sad_wgt"))
         self.register_baseline("DEM Merge", self.weighted_merge(self.merge_fn, "dem_wgt"))
         self.register_baseline("MAS Merge", self.weighted_merge(self.merge_fn, "mas_wgt"))
-        self.register_baseline("Oracle Merge", self.weighted_merge(self.merge_fn, "orc_wgt"))
+        # self.register_baseline("Oracle Merge", self.weighted_merge(self.merge_fn, "orc_wgt"))
     
-    def test_merged_granular(self, orig_golddict, num_samples=5, debug=False, **kwargs):
+    def test_recombination(self, orig_golddict, num_samples=5, debug=False, **kwargs):
         self.backup_preds()
-        self.bau_preds = self.get_merged_preds(granular_preds_dict=self.bau_preds)
-        # self.hon_preds = self.get_merged_preds(granular_preds_dict=self.hon_preds)
-        self.sad_preds = self.get_merged_preds(granular_preds_dict=self.sad_preds)
-        # self.heu_preds = self.get_merged_preds(granular_preds_dict=self.heu_preds)
-        self.dem_preds = self.get_merged_preds(granular_preds_dict=self.dem_preds)
-        self.mas_preds = self.get_merged_preds(granular_preds_dict=self.mas_preds)
-        self.oracle_preds = self.get_merged_preds(granular_preds_dict=self.oracle_preds)
+        self.bau_preds = self.get_recombined_preds(granular_preds_dict=self.bau_preds)
+        # self.hon_preds = self.get_recombined_preds(granular_preds_dict=self.hon_preds)
+        self.sad_preds = self.get_recombined_preds(granular_preds_dict=self.sad_preds)
+        # self.heu_preds = self.get_recombined_preds(granular_preds_dict=self.heu_preds)
+        self.dem_preds = self.get_recombined_preds(granular_preds_dict=self.dem_preds)
+        self.mas_preds = self.get_recombined_preds(granular_preds_dict=self.mas_preds)
+        self.oracle_preds = self.get_recombined_preds(granular_preds_dict=self.oracle_preds)
         for i in range(len(self.rand_preds)):
-            self.rand_preds[i] = self.get_merged_preds(granular_preds_dict=self.rand_preds[i])
+            self.rand_preds[i] = self.get_recombined_preds(granular_preds_dict=self.rand_preds[i])
         new_extra_baseline_labels = {}
         for k, v in self.extra_baseline_labels.items():
-            new_extra_baseline_labels[k] = self.get_merged_preds(granular_preds_dict=v)
+            new_extra_baseline_labels[k] = self.get_recombined_preds(granular_preds_dict=dict(v))
         self.extra_baseline_labels = new_extra_baseline_labels
         self.golddict = orig_golddict
         self.test(num_samples=num_samples, debug=debug, **kwargs)

@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import copy
+import re
 from collections import defaultdict
 from matplotlib import pyplot as plt
 import sklearn
@@ -83,6 +84,13 @@ class SeqRange(VectorRange):
     def __getitem__(self, item):
         return self.startend[item]
 
+def vr_from_string(string):
+    ''' string like "([425.0, 893.0], [458.0, 941.0])" '''
+    start, end = re.findall('\[.*?\]', string)
+    start = list(map(float, start[1:-1].split(",")))
+    end = list(map(float, end[1:-1].split(",")))
+    return VectorRange(start, end)
+
 def unionize_vectorrange_sequence(vectorranges, **kwargs):
     vectorranges = copy.deepcopy(vectorranges)
     for dim in range(vectorranges[0].numdims):
@@ -90,12 +98,32 @@ def unionize_vectorrange_sequence(vectorranges, **kwargs):
         vectorranges = sorted(list(set(sortedvectorranges)))
     return vectorranges
 
-def cluster_decomp(minilabels, dist_fn=None, n_clusters=None, plot_fn=None):
+def create_oracle_decomp_fn(gold_dict):
+    def oracle_decomp(minilabels, item_id, dist_fn=None, plot_fn=None, **kwargs):
+        if len(minilabels) < 2:
+            return [np.array([0])]
+        gold_labels = gold_dict.get(item_id)
+        # lat_obj_minilabels = {}
+        # for minilabel in minilabels:
+        #     lat_obj = np.argmin([dist_fn(gold, minilabel) for gold in gold_labels])
+        #     lat_obj_minilabels.setdefault(lat_obj, []).append(minilabel)
+        minilabel_clusters = [np.argmin([dist_fn([gold], [minilabel]) for gold in gold_labels]) for minilabel in minilabels]
+        clusterdict = defaultdict(list)
+        for i, cluster in enumerate(minilabel_clusters):
+            clusterdict[cluster].append(i)
+        result = [np.array(indices) for indices in clusterdict.values()]
+        return result
+    return oracle_decomp
+
+def cluster_decomp(minilabels, dist_fn=None, n_clusters=None, plot_fn=None, **kwargs):
+    '''
+    Return a list of length #clusters, where each element is a ndarray holding indices
+            of minilabels corresponding to that cluster
+    '''
     if len(minilabels) < 2:
-        if dist_fn is None:
-            print(minilabels)
         return [np.array([0])]
         # return minilabels if dist_fn is None else [np.array([0])]
+    n_clusters = min(n_clusters, len(minilabels)) if n_clusters is not None else None
     if dist_fn is None:
         centroids = [vr.centroid() for vr in minilabels]
         dists = euclidean_distances(centroids)
@@ -105,34 +133,23 @@ def cluster_decomp(minilabels, dist_fn=None, n_clusters=None, plot_fn=None):
         clustering.fit(centroids)
     else:
         dists = np.array([[dist_fn([a], [b]) for a in minilabels] for b in minilabels])
-        # mean_dist = np.std(dists)
         mean_dist = np.mean(np.median(dists, axis=0))
-        # print(mean_dist)
         clustering = AgglomerativeClustering(n_clusters=n_clusters,
                                              distance_threshold=mean_dist if n_clusters is None else None,
                                              affinity="precomputed",
                                              linkage="average") # single
         clustering.fit(dists)
-        # print(clustering.labels_)
         
-    labels = clustering.labels_
-    labeldict = defaultdict(list)
-    for i, label in enumerate(labels):
-        labeldict[label].append(i)
-    result = []
-    for indices in labeldict.values():
-        # uv = unionize_vectorrange_sequence(np.array(minilabels)[np.array(indices)])
-        # result += uv
-        # uv = np.array(minilabels)[np.array(indices)]
-        # result.append(uv)
-        result.append(np.array(indices))
+    minilabel_clusters = clustering.labels_
+    clusterdict = defaultdict(list)
+    for i, cluster in enumerate(minilabel_clusters):
+        clusterdict[cluster].append(i)
+    result = [np.array(indices) for indices in clusterdict.values()]
     
     if plot_fn is not None:
         colors = ["r", "b", "g", "y", "m", "c", "k"]
         for i, vr in enumerate(minilabels):
-            plot_fn(vr, color=colors[labels[i] % len(colors)], alpha=0.5, text=labels[i])
-        # for vr in result:
-        #     plot_fn(vr, color="ko--", alpha=1)
+            plot_fn(vr, color=colors[minilabel_clusters[i] % len(colors)], alpha=0.5, text=minilabel_clusters[i])
         plt.gca().invert_yaxis()
         plt.show()
     return result
@@ -215,12 +232,16 @@ def decomposition(experiment, decomp_fn, plot_fn=None):
             for label in uid_labels:
                 uids.append(uid)
                 labels.append(label)
-        est_num_latent = int(np.ceil(np.median(sorted(num_latent)[1:-1])) if len(num_latent) > 2 else np.max(num_latent))
+        est_num_latent = np.max(num_latent)
+        # est_num_latent = int(np.ceil(np.max(num_latent) + 2 * np.std(num_latent)))
+
+        # print(item_id, ">>>", len(experiment.golddict.get(item_id)), est_num_latent)
+        # est_num_latent = int(np.ceil(np.median(sorted(num_latent)[1:-1])) if len(num_latent) > 2 else np.max(num_latent))
         
         origItemID = []
         newItemID = []
         newItemVR = []
-        region_label_indices_list = decomp_fn(labels, dist_fn, est_num_latent, plot_fn)
+        region_label_indices_list = decomp_fn(labels, dist_fn=dist_fn, n_clusters=est_num_latent, plot_fn=plot_fn, item_id=item_id)
         uid_set = set(uids)
         for region_i, region_label_indices in enumerate(region_label_indices_list):
             region_uids = list(np.array(uids)[region_label_indices])

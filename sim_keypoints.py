@@ -24,12 +24,15 @@ def alter_normal_jump(points, scale):
 def alter_cauchy_jump(points, scale, abs_bound):
     return points + utils.bounded_cauchy(scale, points.shape, abs_bound)
 
+def disappear(points, p_disappear):
+    return None if np.random.uniform() < p_disappear else points
+
 def shift_by_uerr(annotation, uerr):
     shifts = [
         alter_rotation(annotation, np.random.normal(0, 0.5 * uerr) * np.pi / 8),
-        alter_magnitude(annotation, np.random.normal(0, 0.1 * uerr)),
-        alter_normal_jump(annotation, 20 * uerr),
-        alter_cauchy_jump(annotation, 20 * uerr, 50),
+        alter_magnitude(annotation, np.random.normal(0, 0.3 * uerr)),
+        alter_normal_jump(annotation, 30 * uerr),
+        alter_cauchy_jump(annotation, 30 * uerr, 100),
     ]
     return np.mean(shifts, axis=0) * np.abs(np.sign(annotation))
 
@@ -41,7 +44,9 @@ def create_user_data(uid, df, pct_items, u_err, difficulty_dict=None, extraarg=N
     for item in items_labeled:
         gold = df[df["item"] == item]["gold"].values[0]
         shifted_kpobjs = [shift_by_uerr(kpobj, u_err) for kpobj in gold]
-        labels.append(shifted_kpobjs)
+        kpobjs = [shifted_kpobjs[0]] + [disappear(kp, u_err / 2) for kp in shifted_kpobjs[1:]]
+        kpobjs = [kp for kp in kpobjs if kp is not None]
+        labels.append(kpobjs)
     dfdict = {
         "uid": [uid] * len(items_labeled),
         "item": items_labeled,
@@ -50,7 +55,7 @@ def create_user_data(uid, df, pct_items, u_err, difficulty_dict=None, extraarg=N
     return pd.DataFrame(dfdict)
 
 class KeypointSimulator(simulation.Simulator):
-    def __init__(self, rawdata_dir='data/coco/person_keypoints_train2017.json', max_items=500, minlabelsperitem=2):
+    def __init__(self, rawdata_dir='data/coco/person_keypoints_train2017.json', max_items=500, minlabelsperitem=4):
         with open(rawdata_dir) as f:
             dataset = json.load(f)
         self.category_id_skeletons = {c["id"]: np.array(c["skeleton"])-1 for c in iter(dataset["categories"])}
@@ -59,7 +64,7 @@ class KeypointSimulator(simulation.Simulator):
         for dataset_annotation in iter(dataset["annotations"]):
             v = img_label.setdefault(dataset_annotation["image_id"], [])
             v.append(dataset_annotation)
-        img_label_minlen = {k: v for k, v in img_label.items() if len(v) >= minlabelsperitem}    
+        img_label_minlen = {k: v for k, v in img_label.items() if len(v) >= minlabelsperitem}  
         
         i = 0
         rows = []

@@ -14,6 +14,25 @@ def borda_count(values, weights):
             points[element] += (n - i) * weight
     return np.argsort(-points)
 
+def keypoint_merge(annotations, weights=None):
+    non_empty = []
+    non_empty_wgts = []
+    for i in range(len(annotations)):
+        anno = annotations[i]
+        if len(anno) > 0:
+            non_empty.append(anno)
+            non_empty_wgts.append(weights[i])
+    # if only one non-empty annotation, return empty
+    if len(non_empty_wgts) < 2 and sum(non_empty_wgts) / sum(weights) < 0.25:
+        return []
+    else:
+        sum_kp = 0
+        sum_wgt = 0
+        for annotation, weight in zip(non_empty, non_empty_wgts):
+            sum_kp += annotation[0] * weight # randomly pick first one
+            sum_wgt += weight
+        return [sum_kp / sum_wgt]
+
 def vectorrange_merge(annotations, weights=None):
     non_empty = []
     non_empty_wgts = []
@@ -22,11 +41,12 @@ def vectorrange_merge(annotations, weights=None):
         if len(anno) > 0:
             non_empty.append(anno)
             non_empty_wgts.append(weights[i])
-    frac_non_empty = sum(non_empty_wgts) / sum(weights)
-    
-    # if majority of annotations are empty, return empty
-    if frac_non_empty < 0.5:
+    # if only one non-empty annotation, return empty
+    if len(non_empty_wgts) < 2 and sum(non_empty_wgts) / sum(weights) < 0.5:
         return []
+    # if majority of annotations are empty, return empty
+    # if sum(non_empty_wgts) / sum(weights) < 0.5:
+    #     return []
     else:
         sum_start = 0
         sum_end = 0
