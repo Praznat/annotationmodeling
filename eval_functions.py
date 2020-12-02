@@ -36,6 +36,8 @@ def _eval_pred_per_gold(pred_spans, gold_spans, strict_range, strict_tag, str_sp
         return _tokenintersects_per_span(pred_spans, gold_spans, strict_tag, str_spans)
 
 def eval_f1(a_spans, b_spans, strict_range, strict_tag, str_spans):
+    # print(a_spans, "::::", b_spans)
+    # print("____")
     if len(a_spans) * len(b_spans) == 0:
         return 0
     p = _eval_pred_per_gold(a_spans, b_spans, strict_range, strict_tag, str_spans)
@@ -106,11 +108,11 @@ def bleu2way(x, y):
 def bleu_multi(x, y):
     return sentence_bleu([xx.split(" ") for xx in x], y.split(" "), smoothing_function=smoother.method4)
 
-def _gleu(x, y):
+def gleu(x, y):
     return sentence_gleu([x.split(" ")], y.split(" "))
 
 def gleu2way(x, y):
-    return (_gleu(x, y) + _gleu(y, x)) / 2
+    return (gleu(x, y) + gleu(y, x)) / 2
 
 def gleu_multi(x, y):
     return sentence_gleu([xx.split(" ") for xx in x], y.split(" "))

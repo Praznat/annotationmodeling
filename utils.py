@@ -213,18 +213,22 @@ def diagnose_gran(experiment, origItems, gran_name="cluster"):
         for gvr in experiment.golddict.get(origItem):
             plot_vrimg(gvr, alpha=0.5,  ax=axs[0, col])
         for _, row in gran_idf.iterrows():
-            for vr in row["annotation"]:
-                worker = row["uid"] - gran_idf["uid"].min()
+            for vr in row[experiment.label_colname]:
+                worker = row[experiment.uid_colname] - gran_idf[experiment.uid_colname].min()
                 experiment.cluster_plotter(vr, color=colors[worker % len(colors)], alpha=0.5, ax=axs[0, col])
-        axs[0, col].set_title("Labels colored by annotator")
+        axs[0, col].set_title("Labels colored by annotator", fontsize=14)
 
         for gvr in experiment.golddict.get(origItem):
             plot_vrimg(gvr, alpha=0.5,  ax=axs[1, col])
         for _, row in gran_idf.iterrows():
-            for vr in row["annotation"]:
+            for vr in row[experiment.label_colname]:
                 cluster = row["newItemID"] - gran_idf["newItemID"].min()
                 experiment.cluster_plotter(vr, color=colors[cluster % len(colors)], alpha=0.5, text=cluster, ax=axs[1, col])
-        axs[1, col].set_title("Labels colored by partition")
+        axs[1, col].set_title("Labels colored by partition", fontsize=14)
+        for ax in axs[:, col]:
+            ax.get_xaxis().set_ticks([])
+            ax.get_yaxis().set_ticks([])
+    plt.gca().invert_yaxis()
     plt.plot()
 
     sad_select_preds = experiment.sad_preds
@@ -244,7 +248,7 @@ def diagnose_gran(experiment, origItems, gran_name="cluster"):
             for gvr in experiment.golddict.get(origItem):
                 plot_vrimg(gvr, alpha=0.5, ax=ax)
             for _, row in gran_idf.iterrows():
-                for vr in row["annotation"]:
+                for vr in row[experiment.label_colname]:
                     try:
                         experiment.cluster_plotter(vr, color="k:", alpha=0.3, ax=ax)
                     except: # sorry...
@@ -267,5 +271,6 @@ def diagnose_gran(experiment, origItems, gran_name="cluster"):
     axs[2, 0].set_ylabel("PDMR")
 
     fig.tight_layout()
+    plt.gca().invert_yaxis()
     plt.plot()
 

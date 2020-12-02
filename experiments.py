@@ -252,6 +252,7 @@ class Experiment():
         self.scoreboard = {}
         self.scoreboard_scores = {}
         self.badness_threshold = 0
+        self.prune_ratio = 0
         self.extra_baseline_labels = {}
 
     def produce_stan_data(self):
@@ -266,13 +267,14 @@ class Experiment():
         ''' trains and predicts using MAS, BAU, and SAD methods '''
         if self.stan_data is None:
             raise ValueError("Must setup stan_data first")
-        dem_model = utils.stanmodel("dem2" if self.stan_data["NUSERS"] > 300 else "dem", overwrite=False)
+        dem_model = utils.stanmodel("dem2_semisup" if self.stan_data["NUSERS"] > 300 else "dem_semisup", overwrite=False)
         # dem_model = utils.stanmodel("dem2", overwrite=False)
-        mas_model = utils.stanmodel("mas2", overwrite=False)
+        mas_model = utils.stanmodel("mas2_semisup", overwrite=False)
         self.stan_data["use_uerr"] = use_uerr
         self.stan_data["use_diff"] = use_diff
         self.stan_data["use_norm"] = 1
         self.stan_data["norm_ratio"] = norm_ratio
+        # dim_size = int(self.annodf.groupby(self.item_colname).count()[self.label_colname].values.mean() * 4 / 5)
         self.stan_data["DIM_SIZE"] = dim_size
         self.stan_data["eps_limit"] = 3
         self.stan_data["uerr_prior_scale"] = 0.251
@@ -299,12 +301,13 @@ class Experiment():
         # self.heu_scoreall = heuristic.score_all(self.stan_data)
         # per_item_user_rankings_heu = heuristic.per_item_user_rankings(self.heu_scoreall)
         # self.heu_preds = get_preds(self.annodf, per_item_user_rankings_heu, self.label_colname, self.item_colname, self.uid_colname)
-
+        stan_opt_data = self.stan_data.copy()
+        stan_opt_data["gold_uerr"] = user_nearest_gold(self.stan_data)
         dem_start = time.time()
-        self.dem_opt = dem_model.optimizing(data=self.stan_data, init=init, verbose=True, iter=dem_iter)
+        self.dem_opt = dem_model.optimizing(data=stan_opt_data, init=init, verbose=True, iter=dem_iter)
         dem_end = time.time()
         mas_start = time.time()
-        self.mas_opt = mas_model.optimizing(data=self.stan_data, init=init, verbose=True, iter=mas_iter)
+        self.mas_opt = mas_model.optimizing(data=stan_opt_data, init=init, verbose=True, iter=mas_iter)
         mas_end = time.time()
         # if True or kwargs.get("timer"):
         #     print("dem", dem_end - dem_start)
@@ -578,10 +581,11 @@ class Experiment():
         dupes = np.sum(label_occurrences > 1)
 
         cols = [nusers, nitems, nlabels, lperu, lperi, dupes]
+        print("nusers", "nitems", "nlabels", "lperu", "lperi", "dupes")
         print(" & ".join(map(str, cols)))
     
-    def prune_data(self, df, ratio):
-        return df.groupby(self.item_colname).apply(_prune_fn, ratio).reset_index(drop=self.item_colname)
+    def prune_data(self, ratio):
+        return self.annodf.groupby(self.item_colname).apply(_prune_fn, ratio).reset_index(drop=self.item_colname)
 
     def remove_supervised(self, ngoldu):
         ''' ONLY FOR SIMULATOR EXPERIMENTS: remove semi-supervised items from test set '''
@@ -773,12 +777,14 @@ class RealExperiment(Experiment):
         self.distance_fn = distance_fn if distance_fn is not None else (lambda x,y: 1 - self.eval_fn(x, y))
     def produce_stan_data(self):
         self.stan_data = utils.calc_distances(self.annodf, self.distance_fn, label_colname=self.label_colname, item_colname=self.item_colname, uid_colname=self.uid_colname)
-    def setup(self, annodf, golddf=None, c_anno_uid=None, c_anno_item=None, c_anno_label=None, c_gold_item=None, c_gold_label=None, merge_index=None, prune_ratio=0):
+    def setup(self, annodf, golddf=None, c_anno_uid=None, c_anno_item=None, c_anno_label=None, c_gold_item=None, c_gold_label=None, merge_index=None):
         renamey = lambda y: self.label_colname if "label" in y else self.item_colname if "item" in y else self.uid_colname if "uid" in y else y
         localargs = locals()
         colrename = {localargs[k]:renamey(k) for k in localargs if "c_" in k and localargs[k] is not None}
         self.annodf = annodf[[c_anno_uid or self.uid_colname, c_anno_item or self.item_colname, c_anno_label or self.label_colname]]
         self.annodf = self.annodf.rename(columns=colrename)[[self.uid_colname, self.item_colname, self.label_colname]]
+        if self.prune_ratio:
+            self.annodf = self.prune_data(self.prune_ratio)
         if merge_index is not None:
             self.merge_index_colname = merge_index
             self.annodf[merge_index] = annodf[merge_index]

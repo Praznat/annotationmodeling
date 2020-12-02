@@ -8,7 +8,7 @@ import experiments
 import utils
 import granularity
 from granularity import SeqRange, VectorRange, TaggedString, cluster_decomp, create_oracle_decomp_fn, vr_from_string
-from eval_functions import eval_f1, iou_score_multi, rmse, oks_score_multi, _oks_score
+from eval_functions import eval_f1, iou_score_multi, rmse, oks_score_multi, _oks_score, gleu, gleu2way
 import merge_functions
 import ner_alignment
 
@@ -340,6 +340,25 @@ class RationalesExperiment(experiments.CategoricalExperiment):
         golddf["gold"] = [{"cat":cat, "rat":None} for cat in golddf["relevance_gold"]]
         super().setup(annodf, golddf, c_anno_label="annotation", c_gold_label="gold")
 
+class TranslationExperiment(experiments.RealExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        super().__init__(gleu, "workeranswer", "sentence", "worker", distance_fn=lambda x,y: 1 - gleu2way(x,y))
+        ds = kwargs.get("DATASET_KEY")
+        self.golddf = pd.read_csv(F"../CrowdWSA2019/data/CrowdWSA2019_{ds}_gt.tsv", delimiter="\t")
+        self.annodf = pd.read_csv(F"../CrowdWSA2019/data/CrowdWSA2019_{ds}_label_anonymous.tsv", delimiter="\t")
+    def setup(self):
+        super().setup(annodf=self.annodf, golddf=self.golddf, c_gold_label="trueanswer")
+
+class J1TranslationExperiment(TranslationExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        super().__init__(eval_fn=eval_fn, distance_fn=dist_fn, DATASET_KEY="J1")
+class T1TranslationExperiment(TranslationExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        super().__init__(eval_fn=eval_fn, distance_fn=dist_fn, DATASET_KEY="T1")
+class T2TranslationExperiment(TranslationExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        super().__init__(eval_fn=eval_fn, distance_fn=dist_fn, DATASET_KEY="T2")
+
 class SimKeypointsExperiment(DecompositionExperiment):
     def __init__(self, eval_fn=oks_score_multi, dist_fn=None, **kwargs):
         super().__init__(eval_fn=eval_fn, label_colname="annotation", item_colname="item", uid_colname="uid")
@@ -356,7 +375,7 @@ class SimKeypointsExperiment(DecompositionExperiment):
         self.cluster_plotter = keypoint_plotter
 
     def setup(self, **kwargs):
-        experiments.KeypointsExperiment.setup(self, n_items=100, n_users=20, pct_items=0.2, uerr_a=2, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
+        experiments.KeypointsExperiment.setup(self, n_items=200, n_users=100, pct_items=0.05, uerr_a=2, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
         super().setup(annodf=self.annodf, golddf=self.simulator.df, c_gold_item="item", c_gold_label="gold", **kwargs)
 
 class SimRankingExperiment(experiments.RankerExperiment):
@@ -387,7 +406,7 @@ def test_experiment(experiment_name,
                     experiment_factory,
                     eval_fn_dict={"default":None},
                     dist_fn_dict={"default":None},
-                    dem_iter=0,
+                    dem_iter=500,
                     mas_iter=500,
                     prune_ratio=0,
                     debug=False):
@@ -398,6 +417,7 @@ def test_experiment(experiment_name,
                 print("\n", eval_name, dist_name)
             inputs = {"eval_fn": eval_fn, "dist_fn": dist_fn}
             the_experiment = experiment_factory(**{k: v for k, v in inputs.items() if v is not None})
+            the_experiment.prune_ratio = prune_ratio
             the_experiment.setup()
             print(the_experiment.describe_data())
             the_experiment.train(dem_iter=dem_iter, mas_iter=mas_iter)

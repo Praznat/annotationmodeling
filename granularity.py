@@ -46,7 +46,11 @@ class VectorRange():
         assert len(start_vector) == len(end_vector)
         self.numdims = len(start_vector)
         for i in range(len(start_vector)):
-            assert start_vector[i] <= end_vector[i]
+            if start_vector[i] > end_vector[i]:
+                print(F"ERROR!!! start {start_vector} greater than end {end_vector}")
+                tmp = start_vector[i]
+                start_vector[i] = end_vector[i]
+                end_vector[i] = tmp
         self.start_vector = start_vector
         self.end_vector = end_vector
         self.tag = tag

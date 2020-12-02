@@ -14,7 +14,6 @@ data {
     int<lower=1, upper=NUSERS> u1s[NDATA];
     int<lower=1, upper=NUSERS> u2s[NDATA];
     int<lower=0, upper=NUSERS> n_gold_users; // first n_gold_users assumed to be gold
-    real gold_user_err;
     real distances[NDATA];
 
     # hyperparameters
