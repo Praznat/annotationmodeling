@@ -267,9 +267,11 @@ class Experiment():
         ''' trains and predicts using MAS, BAU, and SAD methods '''
         if self.stan_data is None:
             raise ValueError("Must setup stan_data first")
+
         dem_model = utils.stanmodel("dem2_semisup" if self.stan_data["NUSERS"] > 300 else "dem_semisup", overwrite=False)
         # dem_model = utils.stanmodel("dem2", overwrite=False)
         mas_model = utils.stanmodel("mas2_semisup", overwrite=False)
+
         self.stan_data["use_uerr"] = use_uerr
         self.stan_data["use_diff"] = use_diff
         self.stan_data["use_norm"] = 1
@@ -801,6 +803,7 @@ class RealExperiment(Experiment):
 
 class CategoricalExperiment(RealExperiment):
     ''' TODO experiment using real simple data '''
+
     def __init__(self, eval_fn=None, distance_fn=None):
         if eval_fn is None:
             eval_fn = lambda x, y: (1 if x == y else 0)
