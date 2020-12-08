@@ -254,6 +254,17 @@ class Experiment():
         self.badness_threshold = 0
         self.prune_ratio = 0
         self.extra_baseline_labels = {}
+        self.supervised_items = {}
+        self.supervised_labels = []
+    
+    def datacopy(self):
+        exp_copy = type(self)(label_colname=self.label_colname, item_colname=self.item_colname, uid_colname=self.uid_colname)
+        exp_copy.annodf = self.annodf
+        exp_copy.stan_data = self.stan_data
+        exp_copy.golddict = self.golddict
+        exp_copy.supervised_items = self.supervised_items
+        exp_copy.supervised_labels = self.supervised_labels
+        return exp_copy
 
     def produce_stan_data(self):
         ''' use distance function to create distance matrices and other data in its final form before training '''
