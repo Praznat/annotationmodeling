@@ -1,4 +1,4 @@
-This repo contains consensus-based unsupervised and semi-supervised methods for estimating the quality of complex annotations based on user-specified _distance functions_.
+This repo contains consensus-based unsupervised and semi-supervised methods for estimating the quality of complex annotations based on user-specified _distance functions_. These are described more formally here: https://www.ischool.utexas.edu/~ml/papers/braylan_web2020.pdf
 
 Unlike related methods (e.g. Dawid-Skene, ZenCrowd, etc.), the methods here are applicable to _complex_ annotations: those that are not expressable as binary or categorical (multiple choice) responses. Some examples may include:
 * Sequences - example response: [(4,18), (21,24), (102,112)]
