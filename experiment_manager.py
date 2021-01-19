@@ -1,15 +1,20 @@
 import os
 import json
 import random
+import pickle
 import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
+from PYEVALB import parser as pyparser
 import experiments
 import utils
 import granularity
 from granularity import SeqRange, VectorRange, TaggedString, cluster_decomp, create_oracle_decomp_fn, vr_from_string
 from eval_functions import eval_f1, iou_score_multi, rmse, oks_score_multi, _oks_score, gleu, gleu2way
 import merge_functions
+from sim_parser import evalb
+from sim_ranker import kendaltauscore
+from sim_keypoints import KeypointSimulator
 import ner_alignment
 
 def label2tvr(label, default=None):
@@ -359,7 +364,28 @@ class T2TranslationExperiment(TranslationExperiment):
     def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
         super().__init__(eval_fn=eval_fn, distance_fn=dist_fn, DATASET_KEY="T2")
 
-class SimKeypointsExperiment(DecompositionExperiment):
+class ParserExperiment(experiments.RealExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        super().__init__(evalb, "annotation", "sentenceId", "uid")
+        ds = kwargs.get("DATASET_KEY")
+        str2parse = pyparser.create_from_bracket_string
+        golddict = pd.read_json(F"data/parser_{ds}_gold.json", typ='series')
+        self.golddf = pd.DataFrame(golddict, columns=["str"]).reset_index()
+        self.golddf["gold"] = [str2parse(p) for p in self.golddf["str"].values]
+        self.annodf = pd.read_csv(F"data/parser_{ds}.csv")
+        self.annodf["annotation"] = [str2parse(p) for p in self.annodf["parse"].values]
+        self.annodf = self.annodf.sort_values("sentenceId")
+    def setup(self):
+        super().setup(annodf=self.annodf, golddf=self.golddf, c_gold_label="gold", c_gold_item="index")
+
+class EasyParserExperiment(ParserExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        super().__init__(eval_fn=eval_fn, distance_fn=dist_fn, DATASET_KEY="easy")
+class HardParserExperiment(ParserExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        super().__init__(eval_fn=eval_fn, distance_fn=dist_fn, DATASET_KEY="hard")
+
+class KeypointsExperiment(DecompositionExperiment):
     def __init__(self, eval_fn=oks_score_multi, dist_fn=None, **kwargs):
         super().__init__(eval_fn=eval_fn, label_colname="annotation", item_colname="item", uid_colname="uid")
         self.merge_fn = merge_functions.keypoint_merge
@@ -375,8 +401,25 @@ class SimKeypointsExperiment(DecompositionExperiment):
         self.cluster_plotter = keypoint_plotter
 
     def setup(self, **kwargs):
-        experiments.KeypointsExperiment.setup(self, n_items=200, n_users=100, pct_items=0.05, uerr_a=2, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
-        super().setup(annodf=self.annodf, golddf=self.simulator.df, c_gold_item="item", c_gold_label="gold", **kwargs)
+        if kwargs.get("sim"):
+            experiments.KeypointsExperiment.setup(self, n_items=200, n_users=100, pct_items=0.05, uerr_a=2, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
+        else:
+            self.simulator = KeypointSimulator(max_items=0)
+            annodf = pickle.load(open("data/keypoints_simdata.pkl", 'rb'))
+            golddf = pickle.load(open("data/keypoints_simgold.pkl", 'rb'))
+        super().setup(annodf=annodf, golddf=golddf, c_gold_item="index", c_gold_label="gold", **kwargs)
+
+class RankingExperiment(experiments.RealExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        super().__init__(kendaltauscore, "rankings", "topic_item", "uid")
+        self.annodf = pd.read_csv("data/rankings_simdata.csv")
+        self.annodf["rankings"] = [np.array(list(map(int, strlabel[1:-1].split()))) for strlabel in self.annodf["rankings"].values]
+        self.golddf = pd.read_csv("data/rankings_simgold.csv")
+        self.golddf["gold"] = [np.array(list(map(int, strlabel[1:-1].split()))) for strlabel in self.golddf["gold"].values]
+        self.merge_fn = merge_functions.borda_count
+
+    def setup(self):
+        super().setup(annodf=self.annodf, golddf=self.golddf, c_gold_label="gold", c_gold_item="topic_item")
 
 class SimRankingExperiment(experiments.RankerExperiment):
     def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
@@ -385,7 +428,7 @@ class SimRankingExperiment(experiments.RankerExperiment):
         self.merge_fn = merge_functions.borda_count
     
     def setup(self):
-        super().setup(n_items=100, n_users=20, pct_items=0.2, uerr_a=1, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
+        super().setup(n_items=100, n_users=30, pct_items=0.2, uerr_a=2, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
 
 def test_NER(debug=True):
     eval_fns = {}
@@ -409,6 +452,7 @@ def test_experiment(experiment_name,
                     dem_iter=500,
                     mas_iter=500,
                     prune_ratio=0,
+                    pct_semisup=0,
                     debug=False):
     results = []
     for eval_name, eval_fn in eval_fn_dict.items():
@@ -420,9 +464,21 @@ def test_experiment(experiment_name,
             the_experiment.prune_ratio = prune_ratio
             the_experiment.setup()
             print(the_experiment.describe_data())
+            if pct_semisup > 0:
+                nsemisupervised = int(len(the_experiment.golddict) * pct_semisup)
+                experiments.set_supervised_items(the_experiment, nsemisupervised)
+                semisup_exp = the_experiment.datacopy()
             the_experiment.train(dem_iter=dem_iter, mas_iter=mas_iter)
             the_experiment.register_weighted_merge()
             the_experiment.test(debug=False)
+            if pct_semisup > 0:
+                experiments.make_supervised_standata(semisup_exp)
+                semisup_exp.train(dem_iter=dem_iter, mas_iter=mas_iter)
+                # semisup_exp.register_weighted_merge()
+                semisup_exp.test(debug=False)
+                for method_name in semisup_exp.scoreboard.keys():
+                    the_experiment.scoreboard[F"SEMISUP {method_name}"] = semisup_exp.scoreboard.get(method_name)
+                    the_experiment.scoreboard_scores[F"SEMISUP {method_name}"] = semisup_exp.scoreboard_scores.get(method_name)
             for method_name, score in the_experiment.scoreboard.items():
                 if debug:
                     print(method_name, score)
@@ -431,7 +487,7 @@ def test_experiment(experiment_name,
 
     results_df = pd.concat([r.reset_index() for r in results])
     results_df.to_csv(F"results/{experiment_name}_results.csv")
-    return results_df
+    return the_experiment, results_df
 
 if __name__ == '__main__':
     test_NER()
