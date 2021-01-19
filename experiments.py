@@ -820,6 +820,7 @@ class CategoricalExperiment(RealExperiment):
 
 # semi-supervised learning
 def remove_supervised_items(expermnt):
+    expermnt.orig_golddict = expermnt.golddict.copy()
     for item in expermnt.supervised_items:
         try:
             del expermnt.golddict[item]

@@ -97,8 +97,9 @@ class RankerSimulator(simulation.Simulator):
 
     def sim_uerr_fn(self, uerr_a, uerr_b, n_users):
         z = 10 * np.random.beta(uerr_a, uerr_b, 10000)
-        return np.quantile(z, np.linspace(0,1,n_users+2)[1:-1])
+        result = np.quantile(z, np.linspace(0,1,n_users+2)[1:-1])
         # return np.random.bea(uerr_a, uerr_b, n_users)
+        return result
     
     def sim_diff_fn(self, difficulty_a, difficulty_b):
         z = 1 * np.random.beta(difficulty_a, difficulty_b, 10000)

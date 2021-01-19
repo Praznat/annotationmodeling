@@ -10,7 +10,14 @@ import utils
 def evalb(parse1, parse2):
     pyparse1 = pyparser.create_from_bracket_string(str(parse1))
     pyparse2 = pyparser.create_from_bracket_string(str(parse2))
-    score = pyscorer.Scorer().score_trees(pyparse1, pyparse2)
+    try:
+        score = pyscorer.Scorer().score_trees(pyparse1, pyparse2)
+    except Exception as e:
+        print(e)
+        print(pyparse1)
+        print(pyparse2)
+        return 0
+
     f1 = 2 * (score.recall * score.prec) / (score.recall + score.prec)
     return f1 * score.tag_accracy
 
