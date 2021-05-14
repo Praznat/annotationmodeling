@@ -5,11 +5,9 @@ from tqdm import tqdm
 from multiprocessing import Pool
 import pickle
 from matplotlib import pyplot as plt
-import pystan
-from scipy.cluster.hierarchy import dendrogram
-from sklearn.decomposition import PCA
 
 def stanmodel(modelname, overwrite):
+    import pystan
     picklefile = modelname + ".pkl"
     try:
         if overwrite:
@@ -39,6 +37,13 @@ def translate_categorical(df, colname, coldict, drop_missing=True):
     result = df[df[colname] >= 0].copy()
     result[colname] = result[colname].astype(int)
     return result
+
+def groups_of(df, colname, colvals=None):
+    if colvals is None:
+        colvals = df[colname].unique()
+    gdf = df.groupby(colname)
+    for colval in colvals:
+        yield colval, gdf.get_group(colval)
 
 # def calc_distances_foritem(idf, compare_fn, label_colname, item_colname, uid_colname):
 #     users = idf[uid_colname].unique()
@@ -70,7 +75,7 @@ def translate_categorical(df, colname, coldict, drop_missing=True):
 #         r = list(p.starmap(calc_distances_foritem, args))
 #         return pd.concat([pd.DataFrame(d) for d in r]).to_dict(orient="list")
 
-def calc_distances(df, compare_fn, label_colname, item_colname, uid_colname="uid"):
+def calc_distances(df, compare_fn, label_colname, item_colname, uid_colname="uid", bound=True):
     items = []
     u1s = []
     u2s = []
@@ -88,7 +93,8 @@ def calc_distances(df, compare_fn, label_colname, item_colname, uid_colname="uid
             u1s.append(u1)
             u2s.append(u2)
             distances.append(distance)
-    distances = np.array(distances) + (.1 - np.min(distances))
+    if bound:
+        distances = np.array(distances) + (.1 - np.min(distances))
     numnans = np.sum(np.isnan(distances))
     if numnans > 0:
         print(f"WARNING! FOUND {numnans} NAN DISTANCES!!")

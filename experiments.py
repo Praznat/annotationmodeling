@@ -233,7 +233,7 @@ def userset(data):
 def _prune_fn(data, ratio):
     n_labels = len(data)
     n_remaining_labels = max(2, int(np.round(n_labels * (1 - ratio))))
-    i = np.random.choice(len(data), n_remaining_labels)
+    i = np.random.choice(len(data), n_remaining_labels, replace=False)
     return data.iloc[i]
 
 class Experiment():
@@ -266,9 +266,9 @@ class Experiment():
         exp_copy.supervised_labels = self.supervised_labels
         return exp_copy
 
-    def produce_stan_data(self):
+    def produce_stan_data(self, bound=True):
         ''' use distance function to create distance matrices and other data in its final form before training '''
-        self.stan_data = utils.calc_distances(self.annodf, self.distance_fn, label_colname=self.label_colname, item_colname=self.item_colname, uid_colname=self.uid_colname)
+        self.stan_data = utils.calc_distances(self.annodf, self.distance_fn, label_colname=self.label_colname, item_colname=self.item_colname, uid_colname=self.uid_colname, bound=bound)
 
     def preds_from_opt(self, opt):
         per_item_user_rankings = get_model_user_rankings(opt, debug=False)
@@ -283,6 +283,7 @@ class Experiment():
         mas_model = utils.stanmodel("mas2_semisup", overwrite=False)
         self.stan_data["use_uerr"] = use_uerr
         self.stan_data["use_diff"] = use_diff
+        self.stan_data["use_invlogit"] = 0
         self.stan_data["use_norm"] = 1
         self.stan_data["norm_ratio"] = norm_ratio
         # dim_size = int(self.annodf.groupby(self.item_colname).count()[self.label_colname].values.mean() * 4 / 5)
@@ -670,6 +671,25 @@ class Experiment():
         self.golddict = orig_golddict
         self.test(num_samples=num_samples, debug=debug, **kwargs)
     
+
+    def calc_krippendorf_alpha_ours(self):
+        goldvals = list(self.golddict.values())
+        goldpairs = utils.flatten([[(goldvals[i], goldvals[j]) for j in range(i+1, len(goldvals))] for i in range(len(goldvals))])
+        intra_item_dists = [self.distance_fn(*gp) for gp in goldpairs]
+        De = np.mean(intra_item_dists)
+        dists = utils.calc_distances(self.annodf, self.distance_fn, label_colname=self.label_colname, item_colname=self.item_colname, uid_colname=self.uid_colname, bound=True)
+        dist_df = pd.DataFrame(dists)
+        Do = dist_df.groupby("items")["distances"].mean()
+        Do_mean = np.mean(Do)
+        return 1 - Do_mean / De
+
+    def calc_krippendorf_alpha(self):
+        return dorff(self.annodf,
+                    experiment_col=self.item_colname,
+                    annotator_col=self.uid_colname,
+                    class_col=self.label_colname,
+                    metric_fn=self.distance_fn)
+
 def run_square(annodf, uid_colname, item_colname, label_colname, squaredir="square-2.0/"):
     ''' put data into SQUARE format for running things like ZenCrowd '''
     outdir = squaredir + "data/test/"
@@ -683,24 +703,41 @@ def run_square(annodf, uid_colname, item_colname, label_colname, squaredir="squa
     respdf.iloc[:-1].to_csv(outdir + "responses.txt", header=False, index=False, sep=" ")
     respdf.iloc[-1:].to_csv(outdir + "responses.txt", header=False, index=False, sep=" ", mode='a', line_terminator="")
         # --responses ./data/test/responses.txt --category ./data/test/categories.txt --method Zen --estimation unsupervised --saveDir ./inferredGold/test/
+        
+
+class ParserSingleton():
+    def __init__(self, num_items=100, min_sentence_length=10):
+        from nltk.data import find as nltkfind
+        from nltk.parse.bllip import BllipParser
+        print("Loading BLLIP")
+        bllip_dir = nltkfind('models/bllip_wsj_no_aux').path
+        self.BLLIP = BllipParser.from_unified_model_dir(bllip_dir)
+        self.generate_sentences(num_items=num_items, min_sentence_length=min_sentence_length)
+    def generate_sentences(self, num_items, min_sentence_length=10, seed=0):
+        from nltk.corpus import brown as browncorpus
+        print("Sampling Brown corpus sentences")
+        np.random.seed(seed)
+        sentences = np.random.choice(browncorpus.sents(), num_items * 3, replace=False)
+        self.sentences = [s for s in sentences if len(s) > min_sentence_length][:num_items]
 
 class ParserExperiment(Experiment):
     ''' experiment using simulated parse data '''
-    def __init__(self):
+    def __init__(self, preloaded_singleton=None):
         super().__init__("parse", "sentenceId")
-        from nltk.data import find as nltkfind
-        from nltk.parse.bllip import BllipParser
-        bllip_dir = nltkfind('models/bllip_wsj_no_aux').path
-        self.BLLIP = BllipParser.from_unified_model_dir(bllip_dir)
+        if preloaded_singleton is None:
+            self.singleton = ParserSingleton()
+        else:
+            self.singleton = preloaded_singleton
+        self.BLLIP = self.singleton.BLLIP
+        self.sentences = self.singleton.sentences
         self.eval_fn = evalb
         self.badness_threshold = 0.9
-
+    
     def setup(self, num_items, n_users, pct_items, uerr_a=1, uerr_b=4, difficulty_a=1, difficulty_b=100,
-                    ngoldu=0, min_sentence_length=10):
-        from nltk.corpus import brown as browncorpus
-        sentences = np.random.choice(browncorpus.sents(), num_items * 3, replace=False)
-        sentences = [s for s in sentences if len(s) > min_sentence_length][:num_items]
-        self.simulator = ParserSimulator(self.BLLIP, sentences)
+                    ngoldu=0):
+        if num_items > len(self.sentences):
+            raise ValueError("Number of items to setup larger than sentences generated")
+        self.simulator = ParserSimulator(self.BLLIP, self.sentences[:num_items])
         self.stan_data = self.simulator.create_stan_data_scenario(n_users=n_users, pct_items=pct_items,
                                                     uerr_a=uerr_a, uerr_b=uerr_b,
                                                     difficulty_a=difficulty_a, difficulty_b=difficulty_b,
@@ -786,8 +823,6 @@ class RealExperiment(Experiment):
         super().__init__(label_colname, item_colname, uid_colname)
         self.eval_fn = eval_fn
         self.distance_fn = distance_fn if distance_fn is not None else (lambda x,y: 1 - self.eval_fn(x, y))
-    def produce_stan_data(self):
-        self.stan_data = utils.calc_distances(self.annodf, self.distance_fn, label_colname=self.label_colname, item_colname=self.item_colname, uid_colname=self.uid_colname)
     def setup(self, annodf, golddf=None, c_anno_uid=None, c_anno_item=None, c_anno_label=None, c_gold_item=None, c_gold_label=None, merge_index=None):
         renamey = lambda y: self.label_colname if "label" in y else self.item_colname if "item" in y else self.uid_colname if "uid" in y else y
         localargs = locals()

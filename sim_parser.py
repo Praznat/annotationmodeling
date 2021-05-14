@@ -1,18 +1,17 @@
 import pandas as pd
 import numpy as np
-from nltk.corpus import brown as browncorpus
-from nltk.parse import malt
-from PYEVALB import scorer as pyscorer
-from PYEVALB import parser as pyparser
 import simulation
 import utils
 
 def evalb(parse1, parse2):
+    from PYEVALB import scorer as pyscorer
+    from PYEVALB import parser as pyparser
     pyparse1 = pyparser.create_from_bracket_string(str(parse1))
     pyparse2 = pyparser.create_from_bracket_string(str(parse2))
     try:
         score = pyscorer.Scorer().score_trees(pyparse1, pyparse2)
     except Exception as e:
+        print("Exception!")
         print(e)
         print(pyparse1)
         print(pyparse2)
@@ -62,13 +61,15 @@ def create_user_data(uid, df, pct_items, u_err, difficulty_dict=None, extraarg=N
     return pd.DataFrame(dfdict)
 
 class ParserSimulator(simulation.Simulator):
-    def __init__(self, bllipparser, tokenized_sentences):
+    def __init__(self, bllipparser, tokenized_sentences, eval_fn=evalb):
+        from nltk.parse import malt
         self.df = pd.DataFrame({"sentenceId":np.arange(len(tokenized_sentences)),
                                 "sentence":[" ".join(s) for s in tokenized_sentences],
                                 "tokens":tokenized_sentences})
         self.bllip = bllipparser
         self.parsers = [bllipparser]
-        # self.parsers.append(malt.MaltParser('maltparser-1.9.2', 'maltparser-1.9.2/engmalt.linear-1.7.mco'))
+        self.eval_fn = eval_fn
+        self.parsers.append(malt.MaltParser('maltparser-1.9.2', 'maltparser-1.9.2/engmalt.linear-1.7.mco'))
         parser = self.parsers[0]
         df_parse_scores = []
         df_parses = []
@@ -78,7 +79,7 @@ class ParserSimulator(simulation.Simulator):
             best_parse = parses[0]
             scores = []
             for parse in parses:
-                scores.append(evalb(parse, best_parse))
+                scores.append(self.eval_fn(parse, best_parse))
             df_parse_scores.append(scores)
             df_parses.append(parses)
         self.df["parse_scores"] = df_parse_scores
@@ -89,7 +90,7 @@ class ParserSimulator(simulation.Simulator):
         self.difficulty_dict = difficulty_dict
         self.sim_df = simulation.create_sim_df(create_user_data, self.df, n_users, pct_items,
                                                         err_rates, difficulty_dict, extraarg=self.parsers)
-        stan_data = utils.calc_distances(self.sim_df, (lambda x,y: 1 - evalb(x, y)), label_colname="parse", item_colname="sentenceId")
+        stan_data = utils.calc_distances(self.sim_df, (lambda x,y: 1 - self.eval_fn(x, y)), label_colname="parse", item_colname="sentenceId")
         return stan_data
     
     def sim_uerr_fn(self, uerr_a, uerr_b, n_users):
