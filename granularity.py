@@ -7,7 +7,7 @@ from matplotlib import pyplot as plt
 import sklearn
 from sklearn.cluster import AgglomerativeClustering, DBSCAN, OPTICS
 from sklearn.metrics.pairwise import euclidean_distances
-from eval_functions import strdistance, _iou_score
+from eval_functions import _iou_score
 from utils import flatten
 
 def merge_strset(strings):

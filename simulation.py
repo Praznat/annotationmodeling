@@ -25,6 +25,13 @@ def create_sim_df(create_user_data_fn, df, n_users, pct_items, err_rates, diffic
         udatas.append(create_user_data_fn(i, df, pct_items_u, err_rates[i], difficulty_dict=difficulty_dict, extraarg=extraarg))
     return pd.concat(udatas)
 
+def create_sim_df_by_item(create_item_data_fn, df, n_users, n_items, pct_users, err_rates, difficulty_dict=None, extraarg=None):
+    idatas = []
+    for i in tqdm(range(n_items)):
+        pct_users_i = pct_users if isinstance(pct_users, float) else pct_users.roll()
+        idatas.append(create_item_data_fn(i, df, n_users, pct_users_i, err_rates, difficulty_dict=difficulty_dict, extraarg=extraarg))
+    return pd.concat(idatas)
+
 class BetaDist():
     def __init__(self, alpha, beta):
         self.alpha = alpha

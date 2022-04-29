@@ -4,10 +4,12 @@ import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
 from scipy.stats import ttest_rel as ttest
+from sklearn.manifold import MDS
 from sim_normvec import VectorSimulator, euclidist
 from sim_parser import ParserSimulator, ParsableStr, evalb
 from sim_ranker import RankerSimulator, kendaltauscore
 from eval_functions import oks_score_multi
+from sim_binary import BinarySimulator, binary_match
 from sim_keypoints import KeypointSimulator
 from sim_segmentation import SegmentationSimulator, bb_intersection_over_union
 from simulation import BetaDist
@@ -20,7 +22,7 @@ def params_model(sim, opt, stan_data, skip_gold=False):
     scatter_corr(opt["uerr"][start:], sim.err_rates[start:], title="User baseline")
     scatter_corr(opt.get("diff"), list(sim.difficulty_dict.values()), title="Item baseline")
 
-def user_avg_dist(stan_data, apply_empirical_prior=True, nusers=None, missing_penalty_pct=0.1):
+def user_avg_dist(stan_data, apply_empirical_prior=True, nusers=None, missing_penalty_pct=0.1, simple=False):
     ''' BAU scores for each user = user's average distance across whole dataset '''
     sddf = pd.DataFrame(stan_data)
     s1 = sddf.groupby("u1s").sum()["distances"]
@@ -29,8 +31,11 @@ def user_avg_dist(stan_data, apply_empirical_prior=True, nusers=None, missing_pe
     n2 = sddf.groupby("u2s").count()["distances"]
     count = n1.add(n2, fill_value=0)
     avg_distances = s1.add(s2, fill_value=0) / count
+    if simple:
+        return avg_distances
     if nusers is None:
         nusers = stan_data["NUSERS"]
+    # if not np.all(avg_distances.index == count.index):
     index = range(1, nusers.values[0] if hasattr(nusers, "values") else nusers + 1)
     avg_distances = avg_distances.reindex(index)
     count = count.reindex(index).fillna(0)
@@ -61,6 +66,31 @@ def item_avg_dist(stan_data):
     sddf = pd.DataFrame(stan_data)
     avg_distances = sddf.groupby("items").mean()["distances"]
     return avg_distances
+
+def correlate_global_local_uerr(stan_data, debug=False):
+    uad = user_avg_dist(stan_data, simple=True)
+    sddf = pd.DataFrame(stan_data)
+    sddf["items"] = sddf["items"] - 1 # stan to python
+    sddf["u1s"] = sddf["u1s"] - 1 # stan to python
+    sddf["u2s"] = sddf["u2s"] - 1 # stan to python
+    sddf["distances"] = sddf["distances"] - .1
+    # does worker avg distance FOR THIS ITEM correlate with GLOBAL worker avg distance?
+    corrs = []
+    for item, idf in sddf.groupby("items"):
+        iuad = user_avg_dist(idf, simple=True)
+        uad_v, iuad_v = pd.concat([uad, iuad], axis=1, join="inner").values.T
+        corr = np.corrcoef(iuad_v, uad_v)[0,1]
+        corrs.append(corr)
+        if debug:
+            plt.scatter(iuad_v, uad_v)
+        #     plt.title(kpexp.golddict.get(item))
+            plt.xlim(0, 1.2)
+            plt.ylim(0, 1.2)
+            plt.xlabel("local worker avg distance")
+            plt.xlabel("global worker avg distance")
+            plt.show()
+    return corrs
+        
 
 def scatter_corr(pred_vals, true_vals, jitter=False, title=None, log=False):
     ''' nice scatter plot '''
@@ -117,7 +147,7 @@ def pred_item(df, pred_uerr, label_colname, item_colname, uid_colname="uid"):
 
 def get_model_user_rankings(opt, debug=False):
     ''' MAS model's user annotation ranking by item '''
-    errs = opt["dist_from_truth"]
+    errs = opt["dist_from_truth"].copy()
     result = np.argsort(errs, axis=1)
     tmp = errs[0][result[0]]
     assert tmp[0] <= tmp[1]
@@ -153,7 +183,7 @@ def get_baseline_item_centrallest(stan_data, annodf, label_colname, item_colname
     for i0 in sorted(annodf[item_colname].unique()):
         i = i0 + 1
         iddf = sddf[sddf["items"] == i]
-        if iddf.empty:
+        if iddf.empty: # no pair distance just one label
             idf = annodf[annodf[item_colname] == i0]
             pred = idf[label_colname].values[0]
         else:
@@ -200,7 +230,7 @@ def get_preds(annodf, per_item_user_rankings, label_colname, item_colname, user_
     return preds
 
 def eval_scores_vs(baseline_scores, model_scores, badness_threshold):
-    ''' print and display compar\ison two sets of scores against each other '''
+    ''' print and display comparison two sets of scores against each other '''
     diffs = np.array(model_scores) - np.array(baseline_scores)
     print(np.mean(baseline_scores), np.mean(model_scores))
     print("t-test", ttest(baseline_scores, model_scores))
@@ -274,13 +304,34 @@ class Experiment():
         per_item_user_rankings = get_model_user_rankings(opt, debug=False)
         return get_preds(self.annodf, per_item_user_rankings, self.label_colname, self.item_colname, self.uid_colname)
 
-    def train(self, use_uerr=1, use_diff=1, norm_ratio=1, dim_size=3, dem_iter=500, mas_iter=500, num_samples=5, **kwargs):
+    def setup_masX_data(self):
+        seed = 1
+        n_dims = self.stan_data["DIM_SIZE"]
+        mds = MDS(n_components=n_dims, max_iter=500, eps=1e-9, random_state=seed, dissimilarity="precomputed", n_jobs=1)
+        sddf = pd.DataFrame(self.stan_data)
+        item_users = np.zeros((self.stan_data["NITEMS"], self.stan_data["NUSERS"]), dtype=int)
+        embeddings = np.zeros((self.stan_data["NITEMS"], self.stan_data["NUSERS"], self.stan_data["DIM_SIZE"]))
+        for item_plus1, idf in sddf.groupby("items"):
+            uids = sorted(set(idf["u1s"]).union(set(idf["u2s"])))
+            distM = np.zeros((len(uids), len(uids)))
+            for _, ldf in idf.iterrows():
+                distM[uids.index(ldf["u1s"]), uids.index(ldf["u2s"])] = ldf["distances"]
+                distM[uids.index(ldf["u2s"]), uids.index(ldf["u1s"])] = ldf["distances"]
+            embs = mds.fit_transform(distM)
+            for user_i, emb in enumerate(embs):
+                item_users[item_plus1-1, user_i] = uids[user_i]
+                embeddings[item_plus1-1, user_i] = emb
+        embeddings = embeddings - embeddings.mean(axis=1)[:,np.newaxis,:]
+        return {"item_users":item_users, "embeddings":embeddings}
+
+    def train(self, use_uerr=1, use_diff=1, norm_ratio=1, dim_size=3, dem_iter=500, mas_iter=500, masX_iter=500, num_samples=5, **kwargs):
         ''' trains and predicts using MAS, BAU, and SAD methods '''
         if self.stan_data is None:
             raise ValueError("Must setup stan_data first")
 
         dem_model = utils.stanmodel("dem2_semisup" if self.stan_data["NUSERS"] > 300 else "dem_semisup", overwrite=False)
         # dem_model = utils.stanmodel("dem2", overwrite=False)
+
         mas_model = utils.stanmodel("mas2_semisup", overwrite=False)
 
         self.stan_data["use_uerr"] = use_uerr
@@ -291,10 +342,15 @@ class Experiment():
         # dim_size = int(self.annodf.groupby(self.item_colname).count()[self.label_colname].values.mean() * 4 / 5)
         self.stan_data["DIM_SIZE"] = dim_size
         self.stan_data["eps_limit"] = 3
-        self.stan_data["uerr_prior_scale"] = 0.251
-        self.stan_data["diff_prior_scale"] = 0.0251
+        self.stan_data["uerr_prior_scale"] = 0.25
+        self.stan_data["diff_prior_scale"] = 0.025
         self.stan_data["uerr_prior_loc_scale"] = 8
         self.stan_data["diff_prior_loc_scale"] = 8
+        self.stan_data["alpha_loc"] = 0.0
+        self.stan_data["alpha_scale"] = 0.5
+        self.stan_data["beta_loc"] = 1.0
+        self.stan_data["beta_scale"] = 0.01
+        self.stan_data["sigma_scale"] = 1#0.1
         self.stan_data["err_scale"] = 0.1
         uerr_b = user_avg_dist(self.stan_data).values
         init = {
@@ -316,7 +372,10 @@ class Experiment():
         # per_item_user_rankings_heu = heuristic.per_item_user_rankings(self.heu_scoreall)
         # self.heu_preds = get_preds(self.annodf, per_item_user_rankings_heu, self.label_colname, self.item_colname, self.uid_colname)
         stan_opt_data = self.stan_data.copy()
-        stan_opt_data["gold_uerr"] = user_nearest_gold(self.stan_data)
+        if stan_opt_data["n_gold_users"] > 0:
+            stan_opt_data["gold_uerr"] = user_nearest_gold(self.stan_data)
+        else:
+            stan_opt_data["gold_uerr"] = np.zeros(stan_opt_data["NUSERS"])
         dem_start = time.time()
         self.dem_opt = dem_model.optimizing(data=stan_opt_data, init=init, verbose=True, iter=dem_iter)
         dem_end = time.time()
@@ -329,14 +388,29 @@ class Experiment():
 
         self.dem_preds = self.preds_from_opt(self.dem_opt) if dem_iter > 0 else None
         self.mas_preds = self.preds_from_opt(self.mas_opt) if mas_iter > 0 else None
+        self.masX_preds = None
+
+        if masX_iter > 0:
+            stan_opt_data.update(self.setup_masX_data())
+            stan_opt_data["uerr_prior_scale"] = 0.25
+            stan_opt_data["uerr_prior_loc_scale"] = 1
+            init["uerr_center"] = stan_opt_data["uerr_prior_scale"] / 5
+            init["center"] = stan_opt_data["embeddings"].mean(axis=1)
+            init["diff"] = self.stan_data["diff_prior_scale"] * np.ones(self.stan_data["NITEMS"])
+            masX_model = utils.stanmodel("masX", overwrite=False)
+            # self.masX_opt = masX_model.optimizing(data=stan_opt_data, init=init, verbose=True, iter=masX_iter)
+            self.masXsampling = masX_model.sampling(stan_opt_data, iter=500, chains=1)
+            samples = self.masXsampling.extract()
+            self.masX_opt = {k:v.mean(axis=0) for k, v in samples.items()}
+            self.masX_preds = self.preds_from_opt(self.masX_opt)
+
+        if hasattr(self, "train_DS"):
+            self.train_DS()
 
         self.rand_preds = []
         for i in range(num_samples):
             self.rand_preds.append(get_baseline_random(self.annodf, self.label_colname, self.item_colname))
         self.oracle_preds = get_oracle_preds(self.stan_data, self.annodf, self.label_colname, self.item_colname, self.uid_colname, self.eval_fn, self.golddict)
-
-    def score_preds(self, preds):
-        return np.array(eval_preds(preds, self.golddict, self.eval_fn))
 
     def eval_model(self, random_scores, model_preds, modelname, num_samples, verbose=True):
         ''' display comparison of model predictions vs baseline '''
@@ -370,10 +444,14 @@ class Experiment():
             self.eval_model(random_scores, self.hon_preds, "BEST HONEYPOT USER", num_samples, verbose=debug)
         self.eval_model(random_scores, self.sad_preds, "SMALLEST AVERAGE DISTANCE", num_samples, verbose=debug)
         # self.eval_model(random_scores, self.heu_preds, "HEURISTIC", num_samples, verbose=debug)
+        if hasattr(self, "ds_preds"):
+            self.eval_model(random_scores, self.ds_preds, "DAWID SKENE", num_samples, verbose=debug)
         if self.dem_preds is not None:
             self.eval_model(random_scores, self.dem_preds, "DISTANCE EXPECTATION MAXIMIZATION", num_samples, verbose=debug)
         if self.mas_preds is not None:
             self.eval_model(random_scores, self.mas_preds, "MULTIDIMENSIONAL ANNOTATION SCALING", num_samples, verbose=debug)
+        if hasattr(self, "masX_preds"):
+            self.eval_model(random_scores, self.masX_preds, "MAS X", num_samples, verbose=debug)
         if hasattr(self, "extra_baseline_labels"):
             for baseline_name, baseline_preds in self.extra_baseline_labels.items():
                 self.eval_model(random_scores, baseline_preds, baseline_name, num_samples, verbose=debug)
@@ -415,7 +493,7 @@ class Experiment():
         '''
         sddf = pd.DataFrame(self.stan_data)
         item_userset = sddf.groupby("items").apply(userset)
-        methods = {"sad":None, "bau":None, "dem":None, "mas":None}
+        methods = {"sad":None, "bau":None, "dem":None, "mas":None, "masX":None}
         for method in methods.keys():
             self.annodf[F"{method}_dist"] = np.nan
             self.annodf[F"{method}_wgt"] = 1 # only relevant for decomposition
@@ -428,6 +506,8 @@ class Experiment():
             dem_logprobs = np.log(self.dem_opt["label_probabilities"] + 0.01)
             methods["dem"] = pd.Series({k+1:v for k, v in enumerate(-dem_logprobs[i])})
             methods["mas"] = pd.Series({k+1:v for k, v in enumerate(self.mas_opt["dist_from_truth"][i])})
+            if hasattr(self, "masX_opt"):
+                methods["masX"] = pd.Series({k+1:v for k, v in enumerate(self.masX_opt["dist_from_truth"][i])})
             iu_distances = sddf[sddf["items"]==i+1][["u1s", "u2s", "distances"]]
             methods["sad"] = user_avg_dist(iu_distances, apply_empirical_prior=False, nusers=self.stan_data["NUSERS"])
             gold = self.golddict.get(i)
@@ -447,8 +527,30 @@ class Experiment():
             weights = data[weights_colname].values if weights_colname is not None else np.ones_like(values)
             return merge_fn(values, weights)
         return self.annodf.groupby(self.item_colname).apply(agg_merge_fn)
+    
+    def test_uerr_wgt_vote(self):
+        self.calc_distmodel_scores()
+        uerr_df = pd.DataFrame({self.uid_colname:np.arange(len(self.mas_opt["uerr"])), "mas_uerr":self.mas_opt["uerr"]})
+        self.annodf = self.annodf.merge(uerr_df, on=self.uid_colname)
+        for _, gdf in self.annodf.groupby(self.item_colname):
+            mas_sad_diff = gdf["mas_dist"] - gdf["sad_dist"]
+            plt.scatter(gdf["mas_uerr"], mas_sad_diff)
+            plt.xlabel("inferred annotator error")
+            plt.ylabel("MAS dist - SAD dist")
+            plt.show()
+        
+    def compare_to_gold_dist(self):
+        # SAD cant really do this for single-label items
+        
+        return
 
-    def debug(self, plot_stress=False, plot_vs_sad=False, plot_vs_gold=False, skip_miniplots=False, do_proper_scoring=True):
+    def compare_mas_sad(self):
+        sddf = pd.DataFrame(self.stan_data)
+        item_userset = sddf.groupby("items").apply(userset)
+
+
+
+    def debug(self, plot_stress=False, plot_vs_sad=False, plot_vs_gold=False, skip_miniplots=False, do_proper_scoring=True, use_PCA=True, print_labels=False):
         ''' tool for diving into results '''
         from sklearn.decomposition import PCA
 
@@ -458,26 +560,34 @@ class Experiment():
         all_scores = {}
 
         for i, iue in enumerate(self.mas_opt["item_user_errors"]):
+            # if self.oracle_preds.get(i) != self.mas_preds.get(i):# or self.sad_preds.get(i) == self.mas_preds.get(i):
+            #     continue
             gold = self.golddict.get(i)
             if gold is None:
                 continue
             users = item_userset.get(i+1)
+            usersX = users.copy()
+            if "center" in self.mas_opt:
+                users = sorted(users)
+                usersX = list(np.arange(np.sum(np.abs(iue.mean(axis=1)) >= 0.0001)) + 1)
             if users is None or len(users) < 2:
                 continue
             dist_from_truth = self.mas_opt["dist_from_truth"][i]
             iu_distances = sddf[sddf["items"]==i+1][["u1s", "u2s", "distances"]]
             if not skip_miniplots:
                 print("item", str(i+1))
-                print(iu_distances)
+                # print(iu_distances)
             sad = user_avg_dist(iu_distances, apply_empirical_prior=False, nusers=self.stan_data["NUSERS"])
             sad_scores = [sad.loc[u] for u in users]
             bau_scores = [bau.loc[u] for u in users]
             # if len(iue[0]) > 2:
             #     all_embeddings = PCA(n_components=2).fit_transform(iue)
             # embeddings = np.array([all_embeddings[u-1] for u in users])
-            embeddings = np.array([iue[u-1] for u in users])
-            if len(embeddings[0]) > 2:
+            embeddings = np.array([iue[u-1] for u in usersX])
+            if use_PCA and len(embeddings[0]) > 2:
                 embeddings = PCA(n_components=2).fit_transform(embeddings)
+            else:
+                embeddings = embeddings[:,:2]
             mas_scores = [dist_from_truth[u-1] for u in users]
             skills = [self.mas_opt["uerr"][u-1] for u in users]
             scale = np.max(np.abs(embeddings)) * 1.05
@@ -515,23 +625,18 @@ class Experiment():
             if plot_stress:
                 for _, row in iu_distances.iterrows():
                     u1, u2 = (int(row["u1s"]-1), int(row["u2s"]-1))
-                    u1emb = embeddings[np.where(u1+1==np.array(list(users)))]
-                    u2emb = embeddings[np.where(u2+1==np.array(list(users)))]
+                    u1emb = embeddings[np.where(u1+1==np.array(list(usersX)))]
+                    u2emb = embeddings[np.where(u2+1==np.array(list(usersX)))]
                     embs = np.concatenate((u1emb, u2emb)).T
                     stress = row["distances"] - np.linalg.norm(iue[u1] - iue[u2])
                     cmap = plt.cm.Reds if stress > 0 else plt.cm.Greens
                     plt.plot(embs[0], embs[1], color=cmap(10*stress))
 
+            all_scores.setdefault("BAU chosen", []).append(self.eval_fn(gold, self.bau_preds.get(i)))
+            all_scores.setdefault("SAD chosen", []).append(self.eval_fn(gold, self.sad_preds.get(i)))
+            all_scores.setdefault("MAS chosen", []).append(self.eval_fn(gold, self.mas_preds.get(i)))
+            all_scores.setdefault("ORC chosen", []).append(self.eval_fn(gold, self.oracle_preds.get(i)))
             if not skip_miniplots:
-                # plt.scatter(embeddings[:,0], embeddings[:,1])
-                for ui, emb in enumerate(embeddings):
-                    plt.plot([0,emb[0]], [0,emb[1]], "b-")
-                    if plot_vs_gold:
-                        pltanno = str(np.round(gold_scores[ui],2))
-                    else:
-                        pltanno = str(list(users)[ui]) + ":" + str(np.round(mas_scores[ui],2)) + ":" + str(np.round(skills[ui],2))
-                    plt.annotate(pltanno, emb)
-
                 def plot_pred(preds, marker, color, size=50):
                     this_pred = preds.get(i)
                     this_uid = idf[[np.array_equal(v, this_pred) for v in idf[self.label_colname]]][self.uid_colname].values[0]
@@ -539,13 +644,48 @@ class Experiment():
                     this_emb = embeddings[this_ui]
                     plt.scatter([this_emb[0]], [this_emb[1]], marker=marker, c=color, s=size)
                 plot_pred(self.oracle_preds, "o", "gold", 100)
-                plot_pred(self.mas_preds, "d", "red")
-                plot_pred(self.bau_preds, "+", "black")
-                plot_pred(self.sad_preds, "x", "black")
+                # plot_pred(self.bau_preds, "+", "black")
+                plot_pred(self.sad_preds, "+", "blue")
+                plot_pred(self.mas_preds, "x", "magenta")
+                mean_SAD = np.mean(embeddings, axis=0)
+                # plt.scatter([mean_SAD[0]], [mean_SAD[1]], marker="o", c="k", s=50)
+                plt.scatter([mean_SAD[0]], [mean_SAD[1]], marker=0, c="b", s=10)
+                # plt.legend(["Oracle", "SAD chosen", "MAS chosen"], loc="upper left")
+                # plt.scatter(embeddings[:,0], embeddings[:,1])
+                labels = [idf[idf[self.uid_colname] == u-1][self.label_colname].values[0] for u in users]
+                center = (0, 0)
+                if "center" in self.mas_opt:
+                    if use_PCA and len(embeddings[0]) > 2:
+                        raise ValueError("must set use_PCA=False if using center")
+                    center = self.mas_opt["center"][i]
+                plt.scatter(center[0], center[1], marker=0, c="m", s=10)
+                print(center, "center")
+                for ui, emb in enumerate(embeddings):
+                    print(emb, skills[ui])
+                    plt.plot([mean_SAD[0], emb[0]], [mean_SAD[1], emb[1]], "b:", alpha=0.25)
+                    plt.plot([center[0], emb[0]], [center[1], emb[1]], "m:", alpha=0.5)
+                    ha = "right"
+                    if plot_vs_gold:
+                        pltanno = str(np.round(gold_scores[ui],2))
+                    else:
+                        pltanno = F"{list(users)[ui]-1}\n$\gamma$={np.round(skills[ui],2)}"
+                        # pltanno = str(list(users)[ui]) + ":" + str(np.round(mas_scores[ui],2)) + ":" + str(np.round(skills[ui],2))
+                    if print_labels:
+                        pltanno = labels[ui]
+                        if emb[0] < -.2:
+                            ha = "right"
+                        elif emb[0] > .2:
+                            ha = "left"
+                        else:
+                            ha = "center"
+                    plt.annotate(pltanno, emb, ha=ha)
 
                 plt.xlim(-scale, scale)
                 plt.ylim(-scale, scale)
                 plt.show()
+                sad_select_eval = self.eval_fn(gold, self.sad_preds.get(i))
+                mas_select_eval = self.eval_fn(gold, self.mas_preds.get(i))
+                print(sad_select_eval, mas_select_eval)
 
             if plot_vs_sad:
                 plt.scatter(mas_scores, sad_scores)
@@ -708,19 +848,21 @@ def run_square(annodf, uid_colname, item_colname, label_colname, squaredir="squa
         
 
 class ParserSingleton():
-    def __init__(self, num_items=100, min_sentence_length=10):
+    def __init__(self, num_items=100, min_sentence_length=6, max_sentence_length=20):
         from nltk.data import find as nltkfind
         from nltk.parse.bllip import BllipParser
         print("Loading BLLIP")
         bllip_dir = nltkfind('models/bllip_wsj_no_aux').path
         self.BLLIP = BllipParser.from_unified_model_dir(bllip_dir)
-        self.generate_sentences(num_items=num_items, min_sentence_length=min_sentence_length)
-    def generate_sentences(self, num_items, min_sentence_length=10, seed=0):
+        self.generate_sentences(num_items=num_items, min_sentence_length=min_sentence_length, max_sentence_length=max_sentence_length)
+    def generate_sentences(self, num_items, min_sentence_length=6, max_sentence_length=20, seed=0):
         from nltk.corpus import brown as browncorpus
         print("Sampling Brown corpus sentences")
         np.random.seed(seed)
         sentences = np.random.choice(browncorpus.sents(), num_items * 3, replace=False)
-        self.sentences = [s for s in sentences if len(s) > min_sentence_length][:num_items]
+        self.sentences = [s for s in sentences if len(s) >= min_sentence_length and len(s) <= max_sentence_length][:num_items]
+        if len(self.sentences) < num_items:
+            print(F"WARNING, only got {len(self.sentences)}/{num_items} sentences")
 
 class ParserExperiment(Experiment):
     ''' experiment using simulated parse data '''
@@ -751,12 +893,13 @@ class ParserExperiment(Experiment):
 
 class RankerExperiment(Experiment):
     ''' experiment using simulated rankings data '''
-    def __init__(self, base_dir):
+    def __init__(self, base_dir="data/qrels.all.txt"):
         super().__init__("rankings", "topic_item")
         self.base_dir = base_dir
         self.eval_fn = kendaltauscore
     def setup(self, n_items, n_users, pct_items, uerr_a, uerr_b, difficulty_a, difficulty_b, ngoldu=0):
         self.simulator = RankerSimulator(self.base_dir, n_items=n_items)
+        self.simulator.eval_fn = self.eval_fn
         self.stan_data = self.simulator.create_stan_data_scenario(n_users=n_users, pct_items=pct_items,
                                                     uerr_a=uerr_a, uerr_b=uerr_b,
                                                     difficulty_a=difficulty_a, difficulty_b=difficulty_b,
@@ -767,13 +910,46 @@ class RankerExperiment(Experiment):
     def setup_standard(self):
         self.setup(n_items=100, n_users=20, pct_items=0.2, uerr_a=-1.0, uerr_b=0.8, difficulty_a=-2.0, difficulty_b=1.3, ngoldu=0)
 
+class BinaryExperiment(Experiment):
+    ''' experiment using simulated binary categorical data '''
+    def __init__(self, p_true=0.5):
+        super().__init__("label", "item")
+        self.eval_fn = binary_match
+        self.p_true = p_true
+    def setup(self, n_items, n_users, pct_items, uerr_a, uerr_b, difficulty_a, difficulty_b, ngoldu=0):
+        self.simulator = BinarySimulator(n_items=n_items, p_true=self.p_true)
+        self.simulator.eval_fn = self.eval_fn
+        self.stan_data = self.simulator.create_stan_data_scenario(n_users=n_users, pct_items=pct_items,
+                                                    uerr_a=uerr_a, uerr_b=uerr_b,
+                                                    difficulty_a=difficulty_a, difficulty_b=difficulty_b,
+                                                    n_gold_users=ngoldu)
+        self.golddict = self.simulator.df.gold.to_dict()
+        self.annodf = self.simulator.sim_df
+        self.remove_supervised(ngoldu)
+    def setup_standard(self):
+        self.setup(n_items=300, n_users=30, pct_items=0.2, uerr_a=1, uerr_b=1, difficulty_a=1, difficulty_b=100, ngoldu=0)
+    def train_DS(self, algorithm='FDS', verbose=False):
+        from fastds import run as run_fastds
+        items = []
+        responses = {}
+        for item, idf in self.annodf.groupby(self.item_colname):
+            items.append(item)
+            label_dict = {}
+            for uid, udf in idf.groupby(self.uid_colname):
+                label_dict[uid] = list(udf[self.label_colname].values)
+            responses[item] = label_dict
+        preds = run_fastds(responses, algorithm, verbose)
+        self.ds_preds = dict(zip(items, preds))
+        
+
 class KeypointsExperiment(Experiment):
     ''' experiment using simulated keypoint data '''
     def __init__(self):
         super().__init__("annotation", "item")
         self.eval_fn = oks_score_multi
-    def setup(self, n_items, n_users, pct_items, uerr_a, uerr_b, difficulty_a, difficulty_b, ngoldu=0):
+    def setup(self, n_items, n_users, pct_items, uerr_a, uerr_b, difficulty_a=1, difficulty_b=1, ngoldu=0):
         self.simulator = KeypointSimulator(max_items=n_items)
+        self.simulator.eval_fn = self.eval_fn
         self.stan_data = self.simulator.create_stan_data_scenario(n_users=n_users, pct_items=pct_items,
                                                     uerr_a=uerr_a, uerr_b=uerr_b,
                                                     difficulty_a=difficulty_a, difficulty_b=difficulty_b,
@@ -843,6 +1019,7 @@ class RealExperiment(Experiment):
             golddf = golddf[[c_gold_item or self.item_colname, c_gold_label or self.label_colname]]
             golddf = golddf.rename(columns=colrename)[[self.item_colname, self.label_colname]]
             golddf = utils.translate_categorical(golddf, self.item_colname, self.itemdict)
+            self.golddf = golddf
             self.golddict = golddf.set_index(self.item_colname).to_dict()[self.label_colname]
             self.golddict = {k: v for k, v in self.golddict.items() if v is not None}
         self.produce_stan_data()

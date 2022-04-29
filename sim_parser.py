@@ -69,7 +69,7 @@ class ParserSimulator(simulation.Simulator):
         self.bllip = bllipparser
         self.parsers = [bllipparser]
         self.eval_fn = eval_fn
-        self.parsers.append(malt.MaltParser('maltparser-1.9.2', 'maltparser-1.9.2/engmalt.linear-1.7.mco'))
+        # self.parsers.append(malt.MaltParser('maltparser-1.9.2', 'maltparser-1.9.2/engmalt.linear-1.7.mco'))
         parser = self.parsers[0]
         df_parse_scores = []
         df_parses = []

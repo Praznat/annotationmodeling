@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from scipy.stats import kendalltau
+from scipy.stats import kendalltau, spearmanr
 import simulation
 import utils
 
@@ -12,8 +12,10 @@ def intersectscore(r1, r2):
     s2 = set(r2)
     return len(s1.intersection(s2)) / len(s1.union(s2))
 
-def kendaltauscore(r1, r2):
-    rfact = pd.factorize(list(set(r1[:TOPK]).union(set(r2[:TOPK]))))
+def kendaltauscore(r1, r2, use_spearmanr=False, topK=None):
+    if topK is None:
+        topK = TOPK
+    rfact = pd.factorize(list(set(r1[:topK]).union(set(r2[:topK]))))
     rfact = zip(rfact[1], rfact[0])
     rfact = dict(rfact)
     # print(r1[:5], r2[:5])
@@ -21,14 +23,15 @@ def kendaltauscore(r1, r2):
     depth = len(rfact) + 50
     r1v = len(rfact) * np.ones(depth)
     r2v = len(rfact) * np.ones(depth)
-    for i in range(min([TOPK, len(r1), len(r2)])):
+    for i in range(min([topK, len(r1), len(r2)])):
         r1v[rfact[r1[i]]] = i
         r2v[rfact[r2[i]]] = i
         # print(r1[i], rfact[r1[i]], r2[i], rfact[r2[i]])
     r1v = r1v.astype(int)
     r2v = r2v.astype(int)
     # print(r1v[:5], r2v[:5], kendalltau(r1v, r2v).correlation)
-    return kendalltau(r1v, r2v).correlation
+    fn = kendalltau if not use_spearmanr else spearmanr
+    return fn(r1v, r2v).correlation
 
 def create_user_data(uid, df, pct_topics, u_err, difficulty_dict=None, extraarg=None):
     items = df.topic_item.unique()
@@ -91,7 +94,7 @@ class RankerSimulator(simulation.Simulator):
         self.err_rates = err_rates
         self.difficulty_dict = difficulty_dict
         self.sim_df = simulation.create_sim_df(create_user_data, self.df, n_users, pct_items, err_rates, difficulty_dict)
-        stan_data = utils.calc_distances(self.sim_df, (lambda x,y: 1 - kendaltauscore(x, y)), label_colname="rankings", item_colname="topic_item")
+        stan_data = utils.calc_distances(self.sim_df, (lambda x,y: 1 - self.eval_fn(x, y)), label_colname="rankings", item_colname="topic_item")
         return stan_data
 
 
