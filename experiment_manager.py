@@ -8,10 +8,12 @@ from matplotlib import pyplot as plt
 from PYEVALB import parser as pyparser
 import experiments
 import utils
+import visualizations
 import granularity
 from granularity import SeqRange, VectorRange, TaggedString, cluster_decomp, create_oracle_decomp_fn, vr_from_string
-from eval_functions import eval_f1, iou_score_multi, rmse, oks_score_multi, _oks_score, gleu, gleu2way
+from eval_functions import eval_f1, iou_score_multi, rmse, oks_score_multi, _oks_score, gleu, gleu2way, bleu, bleu2way, ted_distance
 import merge_functions
+import agreement
 from sim_parser import evalb
 from sim_ranker import kendaltauscore
 from sim_keypoints import KeypointSimulator
@@ -82,7 +84,7 @@ class AffectExperiment(experiments.RealExperiment):
         emotions = ["surprise", "disgust", "sadness", "fear", "valence", "joy", "anger"]
         def load_snow(relfilepath):
             return pd.read_csv(relfilepath, sep="\t").set_index("!amt_annotation_ids")
-        dfs = [load_snow(self.data_dir + f + ".standardized.tsv") for f in emotions]
+        dfs = [load_snow(self.data_dir + f + ".standardized.tsv").reset_index() for f in emotions]
         full_df = pd.concat(dfs, join="inner", axis=1)
 
         full_df["annotation"] = full_df["response"].values.tolist()
@@ -106,14 +108,12 @@ class DecompositionExperiment(experiments.RealExperiment):
         gran_exp.setup(granno_df, merge_index="origItemID")
         self.gran_experiments[name] = gran_exp
         
-    def setup(self, annodf, golddf, c_gold_item=None, c_gold_label=None, skip_gran=False, **kwargs):
+    def setup(self, annodf, golddf, c_gold_item=None, c_gold_label=None, skip_gran=True, **kwargs):
         super().setup(annodf=annodf, golddf=golddf, c_gold_item=c_gold_item, c_gold_label=c_gold_label)
         if not skip_gran:
-                # self.register_gran_exp("intersect", granularity.fragment_by_overlaps(self))
-            self.register_gran_exp("cluster", granularity.decomposition(self, decomp_fn=cluster_decomp, plot_fn=self.cluster_plotter))
-            oracle_decomp = create_oracle_decomp_fn(self.golddict)
-            self.register_gran_exp("oracle", granularity.decomposition(self, decomp_fn=oracle_decomp, plot_fn=self.cluster_plotter))
-                # self.register_gran_exp("oracle", granularity.fragment_by_overlaps(self, use_oracle=True))
+            self.register_gran_exp("cskip_granluster", granularity.decomposition(self, decomp_fn=cluster_decomp, plot_fn=self.cluster_plotter))
+            # oracle_decomp = create_oracle_decomp_fn(self.golddict)
+            # self.register_gran_exp("oracle", granularity.decomposition(self, decomp_fn=oracle_decomp, plot_fn=self.cluster_plotter))
 
     def register_weighted_merge(self):
         if hasattr(self, "merge_fn"):
@@ -153,10 +153,11 @@ class PICOExperiment(DecompositionExperiment):
         super().__init__(lambda x,y: eval_f1(x, y, strict_range=False, strict_tag=False, str_spans=False),
                         "label", "itemID", "uid")
         self.rawdf = pd.read_json("data/PICO/PICO-annos-crowdsourcing.json", lines=True)
+        # self.rawdf = pd.read_json("data/PICO/PICO-annos-crowdsourcing-big.json", lines=True)
         self.aggdf = pd.read_json("data/PICO/PICO-annos-crowdsourcing-agg.json", lines=True)
         self.golddf = pd.read_json("data/PICO/PICO-annos-professional.json", lines=True)
         self.merge_fn = merge_functions.vectorrange_merge
-        self.cluster_plotter = utils.plot_seqrange
+        self.cluster_plotter = visualizations.plot_seqrange
 
     def setup(self):
         userIDs = []
@@ -168,11 +169,11 @@ class PICOExperiment(DecompositionExperiment):
         for row in self.rawdf.iterrows():
             itemID = row[1]["docid"]
             data = row[1]["Participants"]
-            gold = self.golddf[self.golddf["docid"] == itemID]["Participants"].values[0]
-            gold = gold.get("MedicalStudent")
-            if gold is None:
-                continue
-            agg = self.aggdf[self.aggdf["docid"] == itemID]["Participants"].values[0]
+            goldvals = self.golddf[self.golddf["docid"] == itemID]["Participants"].values
+            gold = goldvals[0] if goldvals else {}
+            gold = gold.get("MedicalStudent", [])
+            aggvals = self.aggdf[self.aggdf["docid"] == itemID]["Participants"].values
+            agg = aggvals[0] if aggvals else {"HMMCrowd":[], "MajorityVote":[]}
             for userID, label in data.items():
                 userIDs.append(userID)
                 itemIDs.append(itemID)
@@ -201,7 +202,7 @@ class BBExperiment(DecompositionExperiment):
         # np.random.seed(42)
         with open('data/gt_canary_od_pretty_02042020.json') as f:
             self.dataset = json.load(f)
-        self.cluster_plotter = utils.plot_vectorrange
+        self.cluster_plotter = visualizations.plot_vectorrange
     
     def setup(self, **kwargs):
         if kwargs.get("random_sample"):
@@ -210,6 +211,12 @@ class BBExperiment(DecompositionExperiment):
             MAX_WORKERS_PER_ITEM = kwargs.pop("max_workers_per_item", None) or 100
             i = 0
             rows = []
+            def n_objects(value):
+                return len(value['ground_truth']['annotations'])
+            if kwargs.get("top_n_objects"):
+                self.dataset = dict(sorted(self.dataset.items(), key=lambda item: -n_objects(item[1])))
+            elif kwargs.get("bottom_n_objects"):
+                self.dataset = dict(sorted(self.dataset.items(), key=lambda item: n_objects(item[1])))
             for image_key, all_data in self.dataset.items():
                 i+=1
                 if i > NUM_ITEMS:
@@ -228,6 +235,11 @@ class BBExperiment(DecompositionExperiment):
             df["annotation"] = df["annotation"].apply(convert2vr).dropna()
             df["groundtruth"] = df["groundtruth"].apply(convert2vr).dropna()
             super().setup(annodf=df, golddf=df, c_gold_item="item", c_gold_label="groundtruth", **kwargs)
+            output_file = kwargs.get("output_file")
+            if output_file:
+                self.annodf.to_csv(F"data/{output_file}_data.csv")
+                with open(F"data/{output_file}_gold.pkl", 'wb') as file_stream:
+                    pickle.dump(self.golddict, file_stream)
         else:
             bbdf = pd.read_csv("data/boundingbox_data.csv")
             anno_vrs = []
@@ -364,9 +376,34 @@ class T2TranslationExperiment(TranslationExperiment):
     def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
         super().__init__(eval_fn=eval_fn, distance_fn=dist_fn, DATASET_KEY="T2")
 
+class CombinedTranslationExperiment(experiments.RealExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        super().__init__(gleu, "workeranswer", "sentence", "worker", distance_fn=lambda x,y: 1 - gleu2way(x,y))
+        j1_part = J1TranslationExperiment()
+        t1_part = T1TranslationExperiment()
+        t2_part = T2TranslationExperiment()
+        self.annodf = pd.concat([j1_part.annodf, t1_part.annodf, t2_part.annodf])
+        self.golddf = pd.concat([j1_part.golddf, t1_part.golddf, t2_part.golddf])
+    def setup(self):
+        super().setup(annodf=self.annodf, golddf=self.golddf, c_gold_label="trueanswer")
+
+
+class ParserExperimentTED(experiments.RealExperiment):
+    def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
+        ted_eval = lambda x, y: 1 - ted_distance(x, y)
+        super().__init__(ted_eval, "parse", "sentenceId", "uid", ted_distance)
+        key = kwargs.pop("key", "")
+        golddict = pickle.load(open(F"parser{key}_golddict.pkl", 'rb'))
+        self.golddf = pd.DataFrame.from_dict(golddict, orient="index", columns=["gold"]).reset_index()
+        self.annodf = pickle.load(open(F"parser{key}_annodf.pkl", 'rb'))
+        self.annodf = self.annodf.sort_values("sentenceId")
+    def setup(self):
+        super().setup(annodf=self.annodf, golddf=self.golddf, c_gold_label="gold", c_gold_item="index")
+
 class ParserExperiment(experiments.RealExperiment):
     def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
-        super().__init__(evalb, "annotation", "sentenceId", "uid")
+        ted_eval = lambda x, y: 1 - ted_distance(x, y)
+        super().__init__(ted_eval, "annotaton", "sentenceId", "uid", ted_distance)
         ds = kwargs.get("DATASET_KEY")
         str2parse = pyparser.create_from_bracket_string
         golddict = pd.read_json(F"data/parser_{ds}_gold.json", typ='series')
@@ -384,6 +421,40 @@ class EasyParserExperiment(ParserExperiment):
 class HardParserExperiment(ParserExperiment):
     def __init__(self, eval_fn=None, dist_fn=None, **kwargs):
         super().__init__(eval_fn=eval_fn, distance_fn=dist_fn, DATASET_KEY="hard")
+
+class SimpleExperimentBase(experiments.RealExperiment):
+    def __init__(self, dataset_name, eval_fn=None, dist_fn=None):
+        eval_fn = lambda x, y: (1 if x == y else 0)
+        super().__init__(eval_fn=eval_fn, label_colname='answer', item_colname='question', uid_colname='worker')
+        self.dataset_name = dataset_name
+    def setup(self):
+        self.annodf = pd.read_csv(F"data/simple/answer_{self.dataset_name}.csv")
+        self.golddf = pd.read_csv(F"data/simple/truth_{self.dataset_name}.csv")
+        super().setup(annodf=self.annodf, golddf=self.golddf, c_gold_label="truth", c_gold_item="question")
+    def datacopy(self):
+        exp_copy = type(self)(self.dataset_name)
+        exp_copy.annodf = self.annodf
+        exp_copy.stan_data = self.stan_data
+        exp_copy.golddict = self.golddict
+        exp_copy.supervised_items = self.supervised_items
+        exp_copy.supervised_labels = self.supervised_labels
+        return exp_copy
+
+def simple_experiment(dataset_name, eval_fn, dist_fn, merge_fn):
+    def factory():
+        expmnt = SimpleExperimentBase(dataset_name)
+        return expmnt
+    return factory
+
+def categorical_experiment(dataset_name):
+    eval_fn = lambda x, y: (1 if x == y else 0)
+    dist_fn = lambda x, y: (0 if x == y else 1)
+    return simple_experiment(dataset_name, eval_fn, dist_fn, merge_fn=None)
+
+def numerical_experiment(dataset_name):
+    eval_fn = lambda x,y: 1 / rmse(x,y)
+    dist_fn = rmse
+    return simple_experiment(dataset_name, eval_fn, dist_fn, merge_fn=merge_functions.numerical_mean)
 
 class KeypointsExperiment(DecompositionExperiment):
     def __init__(self, eval_fn=oks_score_multi, dist_fn=None, **kwargs):
@@ -430,6 +501,23 @@ class SimRankingExperiment(experiments.RankerExperiment):
     def setup(self):
         super().setup(n_items=100, n_users=30, pct_items=0.2, uerr_a=2, uerr_b=1, difficulty_a=1, difficulty_b=1, ngoldu=0)
 
+def get_annotator_empirical_skill(expmnt):
+    golddf = pd.DataFrame({
+                expmnt.item_colname:list(expmnt.golddict.keys()),
+                "gold":list(expmnt.golddict.values())
+                })
+    joindf = expmnt.annodf.join(golddf, on=expmnt.item_colname, rsuffix="g")
+    joindf["evalscore"] = joindf.apply(lambda x: expmnt.eval_fn(x["gold"], x[expmnt.label_colname]), axis=1)
+    bau = experiments.user_avg_dist(expmnt.stan_data)
+    uids = []
+    goldscores = []
+    bauscores = []
+    for uid, udf in utils.groups_of(joindf, expmnt.uid_colname):
+        uids.append(uid)
+        goldscores.append(np.mean(udf["evalscore"]))
+        bauscores.append(bau.get(uid+1))
+    return pd.DataFrame({expmnt.uid_colname:uids, "goldscore":goldscores, "bauscore":bauscores})
+
 def test_NER(debug=True):
     eval_fns = {}
     dist_fns = {}
@@ -444,16 +532,25 @@ def test_NER(debug=True):
 
     return test_experiment("NER", NERExperiment, eval_fns, dist_fns, debug=debug)
 
+def spam(expmnt, frac_spammers):
+    uids = expmnt.annodf.groupby(expmnt.uid_colname)[expmnt.label_colname].count().sort_values(ascending=False).index
+    n_skip = np.round(1 / frac_spammers).astype(int)
+    spammer_uids = uids[n_skip::n_skip]
+    spammer_rows = expmnt.annodf[expmnt.uid_colname].isin(spammer_uids)
+    spam_labels = expmnt.annodf.loc[spammer_rows, expmnt.label_colname].sample(frac=1)
+    expmnt.annodf.loc[spammer_rows, expmnt.label_colname] = spam_labels.values
 
 def test_experiment(experiment_name,
                     experiment_factory,
                     eval_fn_dict={"default":None},
                     dist_fn_dict={"default":None},
                     dem_iter=500,
-                    mas_iter=500,
+                    mas_iter=5000,
                     prune_ratio=0,
-                    pct_semisup=0,
-                    debug=False):
+                    frac_semisup=0,
+                    frac_spammers=0,
+                    debug=False,
+                    **kwargs):
     results = []
     for eval_name, eval_fn in eval_fn_dict.items():
         for dist_name, dist_fn in dist_fn_dict.items():
@@ -462,16 +559,25 @@ def test_experiment(experiment_name,
             inputs = {"eval_fn": eval_fn, "dist_fn": dist_fn}
             the_experiment = experiment_factory(**{k: v for k, v in inputs.items() if v is not None})
             the_experiment.prune_ratio = prune_ratio
-            the_experiment.setup()
+            the_experiment.setup(**kwargs)
+            if frac_spammers > 0:
+                spam(the_experiment, frac_spammers)
+                the_experiment.setup()
+
             print(the_experiment.describe_data())
-            if pct_semisup > 0:
-                nsemisupervised = int(len(the_experiment.golddict) * pct_semisup)
+            # uskdf = get_annotator_empirical_skill(the_experiment)
+            # print("baumean", "goldmean")
+            # print(uskdf["bauscore"].mean(), uskdf["goldscore"].mean())
+            # print("baustd", "goldstd")
+            # print(uskdf["bauscore"].std(), uskdf["goldscore"].std())
+            if frac_semisup > 0:
+                nsemisupervised = int(len(the_experiment.golddict) * frac_semisup)
                 experiments.set_supervised_items(the_experiment, nsemisupervised)
                 semisup_exp = the_experiment.datacopy()
             the_experiment.train(dem_iter=dem_iter, mas_iter=mas_iter)
-            the_experiment.register_weighted_merge()
+            # the_experiment.register_weighted_merge() # TODO uncomment
             the_experiment.test(debug=False)
-            if pct_semisup > 0:
+            if frac_semisup > 0:
                 experiments.make_supervised_standata(semisup_exp)
                 semisup_exp.train(dem_iter=dem_iter, mas_iter=mas_iter)
                 # semisup_exp.register_weighted_merge()
@@ -488,6 +594,86 @@ def test_experiment(experiment_name,
     results_df = pd.concat([r.reset_index() for r in results])
     results_df.to_csv(F"results/{experiment_name}_results.csv")
     return the_experiment, results_df
+
+def test_iaa(experiment_cls, distance_fns, n_splits=10, cache_item_errors=False):
+    the_exp = experiment_cls()
+    the_exp.setup()
+    the_exp.describe_data()
+
+    n_items = len(the_exp.annodf[the_exp.item_colname].unique())
+    items_per_split = int(n_items / n_splits)
+    items_to_split = None
+
+    for distance_fn in distance_fns:
+        iaa = agreement.InterAnnotatorAgreement.create_from_experiment(the_exp, distance_fn=distance_fn)
+        iaa.setup()
+        if items_to_split is None or not cache_item_errors:
+            items_to_split = agreement.split_items_by_gold_error(iaa, items_per_split=items_per_split)
+        mini_iaas = agreement.split_iaa_by_item(iaa, split_items=items_to_split)
+        file_out_name = F"IAA-{experiment_cls.__name__}-{distance_fn.__name__}"
+        with open(F"{file_out_name}.pkl", 'wb') as file_stream:
+            pickle.dump(mini_iaas, file_stream)
+
+def split_by_golderr(expmnt, n_splits=3, train_and_test=True):
+    iaa = agreement.InterAnnotatorAgreement.create_from_experiment(expmnt)
+    items_per_split = np.floor(expmnt.stan_data["NITEMS"] / n_splits)
+    items_to_split = agreement.split_items_by_gold_error(iaa, items_per_split=items_per_split)
+    if not hasattr(expmnt, "golddf") or expmnt.golddf is None:
+        expmnt.golddf = pd.DataFrame({
+            expmnt.item_colname:list(expmnt.golddict.keys()),
+            expmnt.label_colname:list(expmnt.golddict.values())
+            })
+    mini_expmnts = []
+    for items in items_to_split:
+        mini_annodf = expmnt.annodf[expmnt.annodf[expmnt.item_colname].isin(items)]
+        mini_golddf = expmnt.golddf[expmnt.golddf[expmnt.item_colname].isin(items)]
+        mini_expmnt = experiments.RealExperiment(expmnt.eval_fn,
+                                                expmnt.label_colname,
+                                                expmnt.item_colname,
+                                                expmnt.uid_colname,
+                                                distance_fn=expmnt.distance_fn)
+        mini_expmnt.setup(annodf=mini_annodf, golddf=expmnt.golddf.copy(), c_gold_item=expmnt.item_colname, c_gold_label=expmnt.label_colname)
+        mini_expmnts.append(mini_expmnt)
+    if train_and_test:
+        for mini_expmnt in mini_expmnts:
+            mini_expmnt.train(dem_iter=0, mas_iter=500)
+            mini_expmnt.test(debug=False)
+            print(mini_expmnt.scoreboard)
+    return mini_expmnts
+
+def test_dist_vs_eval(experiment_cls, distance_fns, inv_eval_fns=None, export_details=True):
+    if inv_eval_fns is None:
+        inv_eval_fns = distance_fns
+    columns = {}
+    exp_name = experiment_cls.__name__
+    for distance_fn in distance_fns:
+        the_exp = experiment_cls()
+        the_exp.distance_fn = distance_fn
+        the_exp.setup()
+        for inv_eval_fn in inv_eval_fns:
+            the_exp.eval_fn = lambda x, y: 1 - inv_eval_fn(x, y)
+            
+            the_exp.train(dem_iter=0, mas_iter=500)
+            the_exp.test(debug=False)
+            dist_name = distance_fn.__name__
+            eval_name = inv_eval_fn.__name__
+            sad = the_exp.scoreboard.get("SMALLEST AVERAGE DISTANCE")
+            mas = the_exp.scoreboard.get("MULTIDIMENSIONAL ANNOTATION SCALING")
+            columns.setdefault("experiment", []).append(exp_name)
+            columns.setdefault("distance_fn", []).append(dist_name)
+            columns.setdefault("eval_fn", []).append(eval_name)
+            columns.setdefault("sad", []).append(sad)
+            columns.setdefault("mas", []).append(mas)
+            
+            if export_details:
+                file_out_name = F"DISTEVAL-{exp_name}-{dist_name}-{eval_name}"
+                with open(F"{file_out_name}.pkl", 'wb') as file_stream:
+                    pickle.dump(the_exp.scoreboard_scores, file_stream)
+
+    with open(F"DISTEVAL-{exp_name}.pkl", 'wb') as file_stream:
+        pickle.dump(pd.DataFrame(columns), file_stream)
+
+
 
 if __name__ == '__main__':
     test_NER()

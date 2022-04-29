@@ -38,7 +38,7 @@ class VectorSimulator(simulation.Simulator):
         self.err_rates = err_rates
         self.difficulty_dict = difficulty_dict
         self.sim_df = simulation.create_sim_df(create_user_data, self.df, n_users, pct_items, err_rates, difficulty_dict)
-        stan_data = utils.calc_distances(self.sim_df, (lambda x,y: euclidist(x, y)), label_colname="label", item_colname="topic_item")
+        stan_data = utils.calc_distances(self.sim_df, (lambda x,y: 1 - self.eval_fn(x, y)), label_colname="label", item_colname="topic_item")
         return stan_data
 
     def sim_uerr_fn(self, uerr_a, uerr_b, n_users):

@@ -4,7 +4,6 @@ import pandas as pd
 from tqdm import tqdm
 from multiprocessing import Pool
 import pickle
-from matplotlib import pyplot as plt
 
 def stanmodel(modelname, overwrite):
     import pystan
@@ -24,7 +23,7 @@ def stanmodel(modelname, overwrite):
     return stan_model
 
 def make_categorical(df, colname, overwrite=True):
-    orig = df[colname].values
+    orig = list(df[colname].values)
     if overwrite:
         df[colname] = pd.Categorical(df[colname]).codes
     return dict(zip(orig, df[colname]))
@@ -79,10 +78,15 @@ def calc_distances(df, compare_fn, label_colname, item_colname, uid_colname="uid
     items = []
     u1s = []
     u2s = []
+    a1s = []
+    a2s = []
     distances = []
-    for item in tqdm(df[item_colname].unique()):
+    n_labels = 0
+    for item in tqdm(sorted(df[item_colname].unique())):
         idf = df[df[item_colname] == item]
         users = idf[uid_colname].unique()
+        u_i = range(len(users))
+        user_i_lookup = dict(zip(users, u_i))
         for u1, u2 in combinations(users, 2):
             p1 = idf[idf[uid_colname]==u1][label_colname].values[0]
             p2 = idf[idf[uid_colname]==u2][label_colname].values[0]
@@ -93,8 +97,13 @@ def calc_distances(df, compare_fn, label_colname, item_colname, uid_colname="uid
             u1s.append(u1)
             u2s.append(u2)
             distances.append(distance)
+            a1s.append(user_i_lookup.get(u1) + n_labels)
+            a2s.append(user_i_lookup.get(u2) + n_labels)
+        if len(users) > 1: # labels not used when no redundancy
+            n_labels += len(users)
     if bound:
         distances = np.array(distances) + (.1 - np.min(distances))
+        # distances = (np.array(distances) + 0.01 - np.min(distances)) / (np.max(distances) + 0.02 - np.min(distances))
     numnans = np.sum(np.isnan(distances))
     if numnans > 0:
         print(f"WARNING! FOUND {numnans} NAN DISTANCES!!")
@@ -102,14 +111,27 @@ def calc_distances(df, compare_fn, label_colname, item_colname, uid_colname="uid
         "items":np.array(items) + 1,
         "u1s":np.array(u1s) + 1,
         "u2s":np.array(u2s) + 1,
-        "distances":distances
+        "a1s":np.array(a1s) + 1,
+        "a2s":np.array(a2s) + 1,
+        "distances":distances,
     }
     stan_data["NDATA"] = len(stan_data["distances"])
     stan_data["NITEMS"] = np.max(np.unique(stan_data["items"]))
     stan_data["NUSERS"] = len(df[uid_colname].unique())
+    stan_data["NLABELS"] = n_labels
     stan_data["n_gold_users"] = 0
     stan_data["gold_user_err"] = 0
+
+    sdf = pd.DataFrame(stan_data)
+    all_as = set(sdf["a1s"]).union(set(sdf["a2s"]))
+    expected = set(range(1, sdf["NLABELS"].unique()[0]))
+    empty = expected - all_as
+    assert len(empty) == 0, F"we found some missing labels: {sorted(list(empty))}"
+
     return stan_data
+
+def nancorr(v1, v2):
+    return pd.DataFrame({"v1":v1, "v2":v2}).corr().values[0,1]
 
 def rotate_via_numpy(xy, radians):
     """Use numpy to build a rotation matrix and take the dot product."""
@@ -128,155 +150,3 @@ def proper_score(model_scores, gold_scores, score_fn=np.square):
     map_r = 1 - map_ps
     map_r[max_i] = map_ps[max_i]
     return np.mean(score_fn(map_r))
-
-def visualize_embeddings(stan_data, opt, sim_df=None, preds={}):
-    from sklearn.decomposition import PCA
-    def userset(data):
-        result = set(data["u1s"]).union(set(data["u2s"]))
-        return result
-    sddf = pd.DataFrame(stan_data)
-    item_userset = sddf.groupby("items").apply(userset)
-    for i, iue in enumerate(opt["item_user_errors"]):
-        users = item_userset.get(i+1)
-        if users is None or len(users) < 3:
-            continue
-        dist_from_truth = opt["dist_from_truth"][i]
-        print("item", str(i+1))
-        print(sddf[sddf["items"]==i+1][["u1s", "u2s", "distances"]])
-        if len(iue[0]) > 2:
-            embeddings = PCA(n_components=2).fit_transform(iue)
-        embeddings = np.array([embeddings[u-1] for u in users])
-        dists = [dist_from_truth[u-1] for u in users]
-        skills = [opt["uerr"][u-1] for u in users]
-        scale = np.max(np.abs(embeddings)) * 1.05
-        plt.scatter(embeddings[:,0], embeddings[:,1])
-        for ui, emb in enumerate(embeddings):
-            plt.plot([0,emb[0]], [0,emb[1]], "b")
-            plt.annotate(str(list(users)[ui]) + ":" + str(np.round(dists[ui],2)) + ":" + str(np.round(skills[ui],2)), emb)
-        if sim_df is not None:
-            preds.get(i)
-            sim_df[sim_df.topic_item==0]
-        plt.xlim(-scale, scale)
-        plt.ylim(-scale, scale)
-        plt.show()
-
-def plot_vectorrange(vr, color="b", alpha=0.3, text=None, ax=None):
-    if ax is None:
-        ax = plt
-    ax.plot([vr.start_vector[0], vr.end_vector[0]], [vr.start_vector[1], vr.start_vector[1]], color, alpha=alpha)
-    ax.plot([vr.start_vector[0], vr.start_vector[0]], [vr.start_vector[1], vr.end_vector[1]], color, alpha=alpha)
-    ax.plot([vr.start_vector[0], vr.end_vector[0]], [vr.end_vector[1], vr.end_vector[1]], color, alpha=alpha)
-    ax.plot([vr.end_vector[0], vr.end_vector[0]], [vr.start_vector[1], vr.end_vector[1]], color, alpha=alpha)
-    if text is not None:
-        x, y = vr.centroid()
-        ax.text(x, y, text, color=color)
-
-def plot_seqrange(vr, color="b", alpha=0.3, text=None, ax=None):
-    if ax is None:
-        ax = plt
-    yT = 0
-    yB = 10
-    ax.plot([vr.start_vector[0], vr.end_vector[0]], [yT, yT], color, alpha=alpha)
-    ax.plot([vr.start_vector[0], vr.start_vector[0]], [yT, yB], color, alpha=alpha)
-    ax.plot([vr.start_vector[0], vr.end_vector[0]], [yB, yB], color, alpha=alpha)
-    ax.plot([vr.end_vector[0], vr.end_vector[0]], [yT, yB], color, alpha=alpha)
-    if text is not None:
-        ax.text(vr.start_vector[0], yT, text, color=color)
-
-def plot_vrimg(vr, alpha=0.3, ax=None):
-    import matplotlib.image as mpimg
-    if ax is None:
-        ax = plt
-    img = mpimg.imread('grey.png')
-    try:
-        imgplot = ax.imshow(img, aspect="auto", extent=(vr.start_vector[0], vr.end_vector[0], vr.start_vector[1], vr.end_vector[1]))
-        imgplot.set_alpha(alpha)
-    except:
-        pass
-
-def plot_annos(data, golddict={}):
-    vrs = [vr for annotation in data["annotation"] for vr in annotation]
-    for vr in vrs:
-        plot_vectorrange(vr)
-    item = data["item"].values[0]
-    gold = golddict.get(item)
-    if gold is not None:
-        for gvr in golddict.get(item):
-            # plot_vectorrange(gvr, "yo--", alpha=1)
-            plot_vrimg(gvr, alpha=0.5)
-    plt.title(data["item"].values[0])
-    plt.show()
-
-
-def diagnose_gran(experiment, origItems, gran_name="cluster"):
-    gran_df = experiment.gran_experiments["cluster"].annodf
-    colors = ["g", "b", "r", "m", "y", "c", "k", "#22aaff", "#ff22aa", "#aaff22"]
-
-    fig, axs = plt.subplots(2, len(origItems), sharex=True, sharey=True, figsize=(4*len(origItems),6))
-    
-    for col, origItem in enumerate(origItems):
-        gran_idf = gran_df[gran_df["origItemID"]==origItem]
-        for gvr in experiment.golddict.get(origItem):
-            plot_vrimg(gvr, alpha=0.5,  ax=axs[0, col])
-        for _, row in gran_idf.iterrows():
-            for vr in row[experiment.label_colname]:
-                worker = row[experiment.uid_colname] - gran_idf[experiment.uid_colname].min()
-                experiment.cluster_plotter(vr, color=colors[worker % len(colors)], alpha=0.5, ax=axs[0, col])
-        axs[0, col].set_title("Labels colored by annotator", fontsize=14)
-
-        for gvr in experiment.golddict.get(origItem):
-            plot_vrimg(gvr, alpha=0.5,  ax=axs[1, col])
-        for _, row in gran_idf.iterrows():
-            for vr in row[experiment.label_colname]:
-                cluster = row["newItemID"] - gran_idf["newItemID"].min()
-                experiment.cluster_plotter(vr, color=colors[cluster % len(colors)], alpha=0.5, text=cluster, ax=axs[1, col])
-        axs[1, col].set_title("Labels colored by partition", fontsize=14)
-        for ax in axs[:, col]:
-            ax.get_xaxis().set_ticks([])
-            ax.get_yaxis().set_ticks([])
-    plt.gca().invert_yaxis()
-    plt.plot()
-
-    sad_select_preds = experiment.sad_preds
-    cluster_sad_select_preds = experiment.gran_experiments["cluster"].sad_preds
-    cluster_sad_merge_preds = experiment.gran_experiments["cluster"].extra_baseline_labels["SAD Merge"]
-
-    sad_select_scores = experiment.score_preds(sad_select_preds)
-    cluster_sad_select_scores = experiment.score_preds(cluster_sad_select_preds)
-    cluster_sad_merge_scores = experiment.score_preds(cluster_sad_merge_preds)
-
-    fig, axs = plt.subplots(3, len(origItems), sharex=True, sharey=True, figsize=(4*len(origItems),9))
-    for col, origItem in enumerate(origItems):
-        gran_idf = gran_df[gran_df["origItemID"]==origItem]
-        for ax in axs[:,col]:
-            ax.get_xaxis().set_ticks([])
-            ax.get_yaxis().set_ticks([])
-            for gvr in experiment.golddict.get(origItem):
-                plot_vrimg(gvr, alpha=0.5, ax=ax)
-            for _, row in gran_idf.iterrows():
-                for vr in row[experiment.label_colname]:
-                    try:
-                        experiment.cluster_plotter(vr, color="k:", alpha=0.3, ax=ax)
-                    except: # sorry...
-                        experiment.cluster_plotter(vr, color="k", alpha=0.2, ax=ax)
-
-        axs[0, col].set_title(F"IOU score: {np.round(sad_select_scores[origItem], 4)}", fontsize=18)
-        for vr in sad_select_preds[origItem]:
-            experiment.cluster_plotter(vr, color="m", alpha=1, ax=axs[0, col])
-
-        axs[1, col].set_title(F"IOU score: {np.round(cluster_sad_select_scores[origItem], 4)}", fontsize=18)
-        for vr in cluster_sad_select_preds[origItem]:
-            experiment.cluster_plotter(vr, color="m", alpha=1, ax=axs[1, col])
-
-        axs[2, col].set_title(F"IOU score: {np.round(cluster_sad_merge_scores[origItem], 4)}", fontsize=18)
-        for vr in cluster_sad_merge_preds[origItem]:
-            experiment.cluster_plotter(vr, color="m", alpha=1, ax=axs[2, col])
-            
-    axs[0, 0].set_ylabel("SELECT")
-    axs[1, 0].set_ylabel("PSR")
-    axs[2, 0].set_ylabel("PDMR")
-
-    fig.tight_layout()
-    plt.gca().invert_yaxis()
-    plt.plot()
-
