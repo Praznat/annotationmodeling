@@ -110,7 +110,12 @@ def _iou_score(vrA, vrB, use_G=False):
     return iou
 
 def iou_score_multi(vrAs, vrBs, use_G=False):
-    return _score_multi(vrAs, vrBs, _iou_score, use_G=use_G)
+    combine_fn = lambda x, y: (np.mean(x) + np.mean(y)) / 2
+    return _score_multi(vrAs,
+                        vrBs,
+                        _iou_score,
+                        combine_fn=combine_fn,
+                        use_G=use_G)
 
 def _iou_f1(vrA, vrB):
     return np.round(_iou_score(vrA, vrB))
