@@ -17,7 +17,7 @@ matplotlib==3.1.1
 mbstrdecoder==0.8.1
 msgfy==0.0.7
 nltk==3.4.5
-numpy==1.17.3
+numpy==1.22.0
 pandas==0.25.3
 parso==0.5.1
 pathvalidate==0.29.0
